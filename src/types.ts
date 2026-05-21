@@ -38,6 +38,12 @@ export const BoolTy = prim("Bool");
 export const StringTy = prim("String");
 export const VoidTy = prim("Void");
 
+function callArg(items: Ty[]): Ty {
+  if (items.length === 0) return VoidTy;
+  if (items.length === 1) return items[0];
+  return tuple(items);
+}
+
 export function prune(t: Ty): Ty {
   if (t.tag === "var" && t.instance) {
     t.instance = prune(t.instance);
@@ -136,10 +142,7 @@ export function typeFromAst(
   }
   if (expr.kind === "TTuple") return tuple(expr.items.map((x) => typeFromAst(x, typeEnv, vars)));
   if (expr.kind === "TFn") {
-    return fn(
-      expr.params.map((x) => typeFromAst(x, typeEnv, vars)),
-      typeFromAst(expr.result, typeEnv, vars),
-    );
+    return fn([callArg(expr.params.map((x) => typeFromAst(x, typeEnv, vars)))], typeFromAst(expr.result, typeEnv, vars));
   }
   if (expr.args.length === 0 && vars.has(expr.name)) return vars.get(expr.name)!;
   const info = typeEnv.get(expr.name);
@@ -171,17 +174,17 @@ export function show(t: Ty): string {
 
 export function baseEnv(): Env {
   const env: Env = new Map();
-  const binaryNum = fn([NumberTy, NumberTy], NumberTy);
+  const binaryNum = fn([tuple([NumberTy, NumberTy])], NumberTy);
   for (const op of ["+", "-", "*", "/", "%"]) env.set(op, { vars: [], type: binaryNum });
   for (const op of ["<", "<=", ">", ">="]) {
-    env.set(op, { vars: [], type: fn([NumberTy, NumberTy], BoolTy) });
+    env.set(op, { vars: [], type: fn([tuple([NumberTy, NumberTy])], BoolTy) });
   }
   for (const op of ["==", "!="]) {
     const a = fresh() as Extract<Ty, { tag: "var" }>;
-    env.set(op, { vars: [a.id], type: fn([a, a], BoolTy) });
+    env.set(op, { vars: [a.id], type: fn([tuple([a, a])], BoolTy) });
   }
-  env.set("&&", { vars: [], type: fn([BoolTy, BoolTy], BoolTy) });
-  env.set("||", { vars: [], type: fn([BoolTy, BoolTy], BoolTy) });
+  env.set("&&", { vars: [], type: fn([tuple([BoolTy, BoolTy])], BoolTy) });
+  env.set("||", { vars: [], type: fn([tuple([BoolTy, BoolTy])], BoolTy) });
   const printable = fresh() as Extract<Ty, { tag: "var" }>;
   env.set("print", { vars: [printable.id], type: fn([printable], VoidTy) });
   return env;

@@ -8,6 +8,7 @@ export function emitModule(module: Module): string {
     "const print = console.log;",
     "const __wm_tuple = (...items) => items;",
     "const __wm_eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);",
+    "const __wm_fail = (name, message) => { const e = new Error(message); e.name = name; throw e; };",
     ...module.decls.flatMap((d) => emitDecl(d)),
     'if (typeof main === "function") await main();',
   ];
@@ -20,6 +21,7 @@ export function emitBundle(units: { name: string; module: Module }[], entry: Mod
     "const print = console.log;",
     "const __wm_tuple = (...items) => items;",
     "const __wm_eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);",
+    "const __wm_fail = (name, message) => { const e = new Error(message); e.name = name; throw e; };",
     ...units.map((u) => emitNamespace(u.name, u.module)),
     ...entry.decls.flatMap((d) => emitDecl(d)),
     'if (typeof main === "function") await main();',
@@ -67,7 +69,11 @@ function exportNames(module: Module): string[] {
 function emitBinding(b: Binding): string[] {
   if (b.pattern.kind === "PVar") return [`const ${id(b.pattern.name)} = ${emitExpr(b.value)};`];
   const tmp = `__wm_bind_${bindingTemp++}`;
-  return [`const ${tmp} = ${emitExpr(b.value)};`, ...emitPatternBind(b.pattern, tmp)];
+  return [
+    `const ${tmp} = ${emitExpr(b.value)};`,
+    ...emitPatternAssert(b.pattern, tmp, "Bind", "pattern match failure in let binding"),
+    ...emitPatternBind(b.pattern, tmp),
+  ];
 }
 
 let bindingTemp = 0;
@@ -90,7 +96,7 @@ function emitExpr(expr: Expr): string {
     case "Lambda":
       return emitLambda(expr.params, expr.body);
     case "Call":
-      return `${emitExpr(expr.callee)}(${expr.args.map(emitExpr).join(", ")})`;
+      return `${emitExpr(expr.callee)}(${emitCallArg(expr.args)})`;
     case "If":
       return `(${emitExpr(expr.cond)} ? ${emitExpr(expr.thenExpr)} : ${emitExpr(expr.elseExpr)})`;
     case "Match":
@@ -117,9 +123,21 @@ function isDecl(value: Decl | Expr): value is Decl {
 }
 
 function emitLambda(params: Param[], body: Expr): string {
-  const names = params.map((_, i) => `__p${i}`);
-  const guards = params.flatMap((p, i) => emitPatternBind(p.pattern, names[i]));
-  return `(${names.join(", ")}) => {\n${guards.join("\n")}\nreturn ${emitExpr(body)};\n}`;
+  const param = "__arg";
+  const pattern = params.length === 0
+    ? { kind: "PVoid" as const }
+    : params.length === 1
+    ? params[0].pattern
+    : { kind: "PTuple" as const, items: params.map((p) => p.pattern) };
+  const checks = emitPatternAssert(pattern, param, "Match", "pattern match failure in function");
+  const guards = emitPatternBind(pattern, param);
+  return `(${param}) => {\n${checks.join("\n")}\n${guards.join("\n")}\nreturn ${emitExpr(body)};\n}`;
+}
+
+function emitCallArg(args: Expr[]): string {
+  if (args.length === 0) return "undefined";
+  if (args.length === 1) return emitExpr(args[0]);
+  return `__wm_tuple(${args.map(emitExpr).join(", ")})`;
 }
 
 function emitMatch(value: Expr, arms: MatchArm[]): string {
@@ -130,9 +148,20 @@ function emitMatch(value: Expr, arms: MatchArm[]): string {
       emitExpr(arm.body)
     };\n}`;
   });
-  return `((__v) => {\n${body.join(" else ")}\nthrow new Error("non-exhaustive match");\n})(${
+  return `((__v) => {\n${body.join(" else ")}\n__wm_fail("Match", "non-exhaustive match");\n})(${
     emitExpr(value)
   })`;
+}
+
+function emitPatternAssert(
+  pattern: Pattern,
+  value: string,
+  errorName: "Bind" | "Match",
+  message: string,
+): string[] {
+  const checks = patternChecks(pattern, value);
+  if (checks.length === 0) return [];
+  return [`if (!(${checks.join(" && ")})) __wm_fail(${JSON.stringify(errorName)}, ${JSON.stringify(message)});`];
 }
 
 function patternChecks(p: Pattern, value: string): string[] {

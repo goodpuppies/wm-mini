@@ -429,6 +429,27 @@ Deno.test("supports annotations on tuple lambda parameters", async () => {
   `);
 });
 
+Deno.test("treats multi-argument calls as one tuple argument", async () => {
+  await checkSource(`
+    let first = (x, _) => { x };
+    let a = first(1, 2);
+    let b = first((3, 4));
+  `);
+});
+
+Deno.test("empty call syntax passes a unit/void argument", async () => {
+  await checkSource(`
+    let one = () => { 1 };
+    let a = one();
+    let b = one(void);
+  `);
+  await assertRejects(
+    () => checkSource("let one = () => { 1 }; let bad = one(1);"),
+    Error,
+    "type mismatch",
+  );
+});
+
 Deno.test("reuses repeated type variables within an annotation", async () => {
   await checkSource(`
     let first_same = (x: t, y: t) => { x };
@@ -522,10 +543,38 @@ Deno.test("supports constructor and literal let patterns", async () => {
   `);
 });
 
+Deno.test("warns when let pattern may fail at runtime", async () => {
+  const result = await checkSource("type Option<T> = None | Some<T>; let Some(x) = None;");
+  assertEquals(result.warnings.length, 1);
+  assertStringIncludes(result.warnings[0], "refutable let pattern may fail at runtime");
+  assertStringIncludes(result.warnings[0], "Some(x)");
+});
+
+Deno.test("does not warn for irrefutable let patterns", async () => {
+  const result = await checkSource("let (x, y) = (1, 2);");
+  assertEquals(result.warnings.length, 0);
+});
+
 Deno.test("literal let patterns reject mismatches", async () => {
   await assertRejects(
     () => checkSource("let true = 2;"),
     Error,
     "type mismatch",
   );
+});
+
+Deno.test("compiled refutable let pattern failures raise Bind", async () => {
+  const source = "type Option<T> = None | Some<T>; let Some(x) = None;";
+  const js = await compile(source);
+  assertStringIncludes(js, '__wm_fail("Bind", "pattern match failure in let binding")');
+});
+
+Deno.test("compiled lambda parameter mismatch raises Match", async () => {
+  const source = "let first = (x, _) => { x };";
+  const js = await compile(source);
+  assertStringIncludes(js, '__wm_fail("Match", "pattern match failure in function")');
+});
+
+Deno.test("supports curried call chaining as unary application", async () => {
+  await checkSource("let call = (x) => { (y) => { x + y } }; let result = call(1)(2);");
 });
