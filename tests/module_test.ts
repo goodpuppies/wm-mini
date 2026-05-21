@@ -141,3 +141,53 @@ Deno.test("exported structure rejects values and aliases that expose private typ
     "exported type Public mentions non-exported type",
   );
 });
+
+Deno.test("named imports keep aliases transparent inside datatype constructor payloads", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(
+    `${dir}/lib.wm`,
+    `
+      export type Pair<T> = (T, T);
+      export type Box<T> = | Box<Pair<T>>;
+      export let make = (x, y) => { Box((x, y)) };
+    `,
+  );
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    `
+      from "./lib.wm" import { Pair, Box, make };
+      let pair: Pair<Number> = (1, 2);
+      let value: Box<Number> = make(1, 2);
+      let sum = match(value) {
+        Box(left, right) => { left + right },
+      };
+    `,
+  );
+
+  const results = await checkFile(`${dir}/main.wm`);
+  const main = results.get(await Deno.realPath(`${dir}/main.wm`));
+  if (!main) throw new Error("missing main result");
+  expectBinding(main.env, "sum", { type: "Number", vars: 0 });
+});
+
+Deno.test("namespace imports keep same-spelled type aliases distinct when their results are nominal", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(
+    `${dir}/a.wm`,
+    "export type Box = | Box; export type Alias = Box; export let make = () => { Box };",
+  );
+  await Deno.writeTextFile(
+    `${dir}/b.wm`,
+    "export type Box = | Box; export type Alias = Box; export let make = () => { Box };",
+  );
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    `
+      from "./a.wm" import * as A;
+      from "./b.wm" import * as B;
+      let bad: A.Alias = B.make();
+    `,
+  );
+
+  await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "type mismatch");
+});

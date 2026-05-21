@@ -95,3 +95,31 @@ Deno.test("type alias parameter substitution preserves sharing", async () => {
 
   expectBinding(result.env, "first_same", { type: "((Number, Number)) => Number", vars: 0 });
 });
+
+Deno.test("type alias substitution is applied inside datatype constructor payloads", async () => {
+  const result = await checkSource(`
+    type Pair<T> = (T, T);
+    type Box<T> = | Box<Pair<T>>;
+    let boxed = Box((1, 2));
+    let unbox = match(value) => {
+      Box(left, right) => { left + right },
+    };
+  `);
+
+  expectBinding(result.env, "Box", { type: "((T, T)) => Box<T>", vars: 1 });
+  expectBinding(result.env, "boxed", { type: "Box<Number>", vars: 0 });
+  expectBinding(result.env, "unbox", { type: "(Box<Number>) => Number", vars: 0 });
+});
+
+Deno.test("datatype constructors reject payloads mentioning unbound type variables", async () => {
+  await assertRejects(
+    () => checkSource("type Bad<T> = | Bad<Missing<T>>;"),
+    Error,
+    "unknown type Missing",
+  );
+  await assertRejects(
+    () => checkSource("type Bad<T> = | Bad<unknown>;"),
+    Error,
+    "unbound type variable unknown",
+  );
+});

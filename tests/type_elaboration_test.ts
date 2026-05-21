@@ -1,4 +1,5 @@
 import { checkSourceSteps } from "../src/compiler.ts";
+import { assertRejects } from "@std/assert";
 import { expectStepBinding, expectStepMissing } from "./type_helpers.ts";
 
 Deno.test("Workman elaboration snapshots show declaration-ordered generalized lets", async () => {
@@ -88,4 +89,33 @@ Deno.test("Workman local declaration snapshots do not leak block-local values", 
   expectStepBinding(steps, 0, "outer", { type: "(Void) => Number", vars: 0 });
   expectStepMissing(steps, 0, "local_id");
   expectStepBinding(steps, 1, "use_outer", { type: "Number", vars: 0 });
+});
+
+Deno.test("wmsml simultaneous val groups do not expose earlier bindings in the same group", async () => {
+  await assertRejects(
+    () => checkSourceSteps("val x = 1 and y = x", { surface: "wmsml" }),
+    Error,
+    "unknown name x",
+  );
+});
+
+Deno.test("wmsml val rec rejects unguarded recursive values", async () => {
+  await assertRejects(
+    () => checkSourceSteps("val rec x = x", { surface: "wmsml" }),
+    Error,
+    "recursive references must be guarded by a function",
+  );
+});
+
+Deno.test("wmsml arrow type annotations are right associative", async () => {
+  const steps = await checkSourceSteps(
+    `
+      val keep: int -> int -> int = fn x => fn y => x
+      val result = keep 1 2
+    `,
+    { surface: "wmsml" },
+  );
+
+  expectStepBinding(steps, 0, "keep", { type: "(Number) => (Number) => Number", vars: 0 });
+  expectStepBinding(steps, 1, "result", { type: "Number", vars: 0 });
 });

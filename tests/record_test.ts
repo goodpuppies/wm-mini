@@ -169,3 +169,37 @@ Deno.test("record patterns reject duplicate fields", async () => {
     "duplicate record field x",
   );
 });
+
+Deno.test("record literals reject missing and extra fields against the nominal target", async () => {
+  await assertRejects(
+    () =>
+      checkSource(`
+        record Point = { x: Number, y: Number };
+        let missing: Point = .{ x = 1 };
+      `),
+    Error,
+    "missing record field for Point",
+  );
+  await assertRejects(
+    () =>
+      checkSource(`
+        record Point = { x: Number };
+        let extra: Point = .{ x = 1, y = 2 };
+      `),
+    Error,
+    "Point has no field y",
+  );
+});
+
+Deno.test("record field projection is rejected when the field does not determine a unique record", async () => {
+  await assertRejects(
+    () =>
+      checkSource(`
+        record Point = { x: Number };
+        record Offset = { x: Number };
+        let getX = (value) => { value.x };
+      `),
+    Error,
+    "ambiguous record field x",
+  );
+});
