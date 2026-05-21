@@ -7,12 +7,19 @@ Start = _ decls:(_ d:TopDecl { return d; })* _ EOF { return mod(decls); }
 TopDecl = ImportDecl / TypeDecl / LetDecl
 
 ImportDecl
-  = "from" __ path:String __ "import" __ "*" __ "as" __ alias:Name _ ";"
-    { return { kind: "ImportDecl", path: path.value, alias }; }
+  = "from" __ path:String __ "import" __ clause:ImportClause _ ";"
+    { return { kind: "ImportDecl", path: path.value, clause }; }
+
+ImportClause
+  = "*" __ "as" __ alias:Name { return { kind: "Namespace", alias }; }
+  / "{" _ specs:ImportSpecList? _ "}" { return { kind: "Named", specs: specs ?? [] }; }
+
+ImportSpecList = first:ImportSpec rest:(_ "," _ s:ImportSpec { return s; })* _ ","? { return [first, ...rest]; }
+ImportSpec = name:Name alias:(_ "as" _ a:Identifier { return a; })? { return { name, alias }; }
 
 LetDecl
-  = "let" __ rec:("rec" __)? first:LetBinding rest:(_ "and" __ b:LetBinding { return b; })* _ ";"
-    { return { kind: "LetDecl", recursive: !!rec, bindings: [first, ...rest] }; }
+  = exported:ExportModifier? "let" __ rec:("rec" __)? first:LetBinding rest:(_ "and" __ b:LetBinding { return b; })* _ ";"
+    { return { kind: "LetDecl", exported: !!exported, recursive: !!rec, bindings: [first, ...rest] }; }
 
 LetBinding
   = pattern:LetPattern _ ann:TypeAnn? _ "=" _ value:Expr
@@ -23,8 +30,10 @@ LetPattern
   / "(" _ first:ParamPattern _ "," _ rest:ParamPatternList? _ ")" { return { kind: "PTuple", items: [first, ...(rest ?? [])] }; }
 
 TypeDecl
-  = "type" __ name:Constructor params:TypeParams? _ "=" _ ctors:CtorDeclList _ ";"
-    { return { kind: "TypeDecl", name, params: params ?? [], ctors }; }
+  = exported:ExportModifier? "type" __ name:Constructor params:TypeParams? _ "=" _ ctors:CtorDeclList _ ";"
+    { return { kind: "TypeDecl", exported: !!exported, name, params: params ?? [], ctors }; }
+
+ExportModifier = "export" __
 
 CtorDeclList = first:CtorDecl rest:(_ "|" _ c:CtorDecl { return c; })* { return [first, ...rest]; }
 CtorDecl = name:Constructor args:("<" _ xs:TypeList _ ">" { return xs; })? { return { name, args: args ?? [] }; }
@@ -42,7 +51,7 @@ MatchExpr
 MatchFn
   = "match" _ "(" _ names:MatchFnParams _ ")" _ "=>" _ "{" _ arms:MatchArmList _ "}"
     {
-      const params = names.map((name) => ({ kind: "PVar", name }));
+      const params = names.map((name) => ({ pattern: { kind: "PVar", name } }));
       const value = names.length === 1
         ? { kind: "Var", name: names[0] }
         : { kind: "Tuple", items: names.map((name) => ({ kind: "Var", name })) };
@@ -84,11 +93,14 @@ TupleOrGroup
   / "(" _ e:Expr _ ")" { return e; }
 
 Block
-  = "{" _ statements:BlockStatement* result:Expr _ ";"? _ "}" { return { kind: "Block", statements, result }; }
+  = "{" _ statements:BlockStatement* result:Expr? _ "}" {
+      return { kind: "Block", statements, result: result ?? { kind: "Void" } };
+    }
 
 BlockStatement
-  = d:LetDecl { return d; }
-  / e:Expr _ ";" _ { return e; }
+  = d:TypeDecl _ { return d; }
+  / d:LetDecl _ { return d; }
+  / &(Expr _ ";") e:Expr _ ";" _ { return e; }
 
 Pattern
   = "_" { return { kind: "PWildcard" }; }
@@ -102,10 +114,12 @@ Pattern
   / c:LongConstructor { return { kind: "PCtor", name: c, args: [] }; }
   / v:LongName { return { kind: "PPinned", name: v }; }
 
-ParamList = "(" _ ps:ParamPatternList? _ ")" { return ps ?? []; }
+ParamList = "(" _ ps:ParamListItems? _ ")" { return ps ?? []; }
+Param = pattern:ParamPattern ann:TypeAnn? { return { pattern, annotation: ann }; }
 ParamPattern = "_" { return { kind: "PWildcard" }; }
   / "(" _ first:ParamPattern _ "," _ rest:ParamPatternList? _ ")" { return { kind: "PTuple", items: [first, ...(rest ?? [])] }; }
   / v:Identifier { return { kind: "PVar", name: v }; }
+ParamListItems = first:Param rest:(_ "," _ p:Param { return p; })* _ ","? { return [first, ...rest]; }
 ParamPatternList = first:ParamPattern rest:(_ "," _ p:ParamPattern { return p; })* _ ","? { return [first, ...rest]; }
 PatternList = first:Pattern rest:(_ "," _ p:Pattern { return p; })* _ ","? { return [first, ...rest]; }
 CtorPattern
@@ -141,7 +155,7 @@ Name = Constructor / Identifier
 LongName = first:Name rest:("." n:Name { return n; })* { return [first, ...rest].join("."); }
 LongConstructor = first:Constructor rest:("." n:Constructor { return n; })* { return [first, ...rest].join("."); }
 IdentPart = [a-zA-Z0-9_]
-Keyword = ("from" / "import" / "as" / "let" / "rec" / "and" / "type" / "if" / "else" / "match" / "true" / "false" / "void") !IdentPart
+Keyword = ("from" / "import" / "as" / "export" / "let" / "rec" / "and" / "type" / "if" / "else" / "match" / "true" / "false" / "void") !IdentPart
 __ = (Whitespace / Comment)+
 _ = (Whitespace / Comment)*
 Whitespace = [ \t\r\n]

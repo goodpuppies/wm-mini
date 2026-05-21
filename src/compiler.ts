@@ -8,8 +8,12 @@ export type CompileOptions = { check?: boolean };
 
 export async function compile(source: string, options: CompileOptions = {}): Promise<string> {
   const ast = await parse(source);
-  if (options.check ?? true) inferModule(ast);
+  if (options.check ?? true) checkModuleWithoutImports(ast);
   return emitModule(ast);
+}
+
+export async function checkSource(source: string): Promise<InferResult> {
+  return checkModuleWithoutImports(await parse(source));
 }
 
 export async function compileFile(input: string, options: CompileOptions = {}): Promise<string> {
@@ -29,6 +33,13 @@ export async function checkFile(input: string): Promise<Map<string, InferResult>
   return (await analyzeFile(input)).results;
 }
 
+function checkModuleWithoutImports(module: Module): InferResult {
+  if (module.decls.some((decl) => decl.kind === "ImportDecl")) {
+    throw new Error("source strings with imports require checkFile");
+  }
+  return inferModule(module);
+}
+
 async function analyzeFile(input: string): Promise<{
   entryPath: string;
   graph: Map<string, Module>;
@@ -44,7 +55,7 @@ async function analyzeFile(input: string): Promise<{
     const imports = new Map<string, InferResult>();
     for (const decl of module.decls) {
       if (decl.kind === "ImportDecl") {
-        imports.set(decl.alias, results.get(await resolveImportPath(path, decl.path))!);
+        imports.set(decl.path, results.get(await resolveImportPath(path, decl.path))!);
       }
     }
     results.set(path, inferModule(module, imports));
@@ -65,7 +76,10 @@ async function loadModule(
   for (const decl of module.decls) {
     if (decl.kind === "ImportDecl") {
       const child = await resolveImportPath(path, decl.path);
-      names.set(child, names.get(child) ?? decl.alias);
+      const alias = decl.clause.kind === "Namespace"
+        ? decl.clause.alias
+        : fallbackModuleName(child);
+      names.set(child, names.get(child) ?? alias);
       await loadModule(child, graph, names, visiting);
     }
   }
@@ -85,4 +99,10 @@ function hash(text: string): number {
   let n = 0;
   for (const c of text) n = (n * 31 + c.charCodeAt(0)) | 0;
   return n;
+}
+
+function fallbackModuleName(path: string): string {
+  const stem = path.split("/").at(-1)?.replace(/\.wm$/, "") || "Module";
+  const name = stem.replace(/[^A-Za-z0-9_]/g, "_");
+  return /^[A-Za-z_]/.test(name) ? name : `Module_${name}`;
 }

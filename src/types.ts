@@ -12,6 +12,7 @@ export type Env = Map<string, Scheme>;
 export type TypeEnv = Map<string, TypeInfo>;
 export type TypeInfo = { id: number; name: string; arity: number };
 export type TypeDeclInfo = { type: TypeInfo; name: string; params: string[]; ctors: CtorDecl[] };
+export type TypeVarScope = Map<string, Ty>;
 
 let nextVar = 0;
 let nextType = 0;
@@ -124,9 +125,15 @@ export function instantiate(scheme: Scheme): Ty {
 export function typeFromAst(
   expr: TypeExpr,
   typeEnv: TypeEnv,
-  vars = new Map<string, Ty>(),
+  vars: TypeVarScope = new Map(),
 ): Ty {
-  if (expr.kind === "TVar") return vars.get(expr.name) ?? fresh(expr.name);
+  if (expr.kind === "TVar") {
+    const existing = vars.get(expr.name);
+    if (existing) return existing;
+    const created = fresh(expr.name);
+    vars.set(expr.name, created);
+    return created;
+  }
   if (expr.kind === "TTuple") return tuple(expr.items.map((x) => typeFromAst(x, typeEnv, vars)));
   if (expr.kind === "TFn") {
     return fn(

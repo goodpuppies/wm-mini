@@ -1,4 +1,4 @@
-import type { Binding, Decl, Expr, Module, Pattern } from "./ast.ts";
+import type { Binding, Decl, Expr, ImportClause, Module, Param, Pattern } from "./ast.ts";
 import {
   baseEnv,
   baseTypeEnv,
@@ -20,6 +20,7 @@ import {
   TypeDeclInfo,
   TypeEnv,
   typeFromAst,
+  TypeVarScope,
   unify,
   VoidTy,
 } from "./types.ts";
@@ -42,10 +43,9 @@ export function inferModule(module: Module, imports = new Map<string, InferResul
   const types = new Map<Expr, Ty>();
   for (const decl of module.decls) {
     if (decl.kind !== "ImportDecl") continue;
-    const imported = imports.get(decl.alias);
-    if (!imported) throw new Error(`unknown import ${decl.alias}`);
-    addQualifiedImport(env, decl.alias, imported.exports);
-    addQualifiedTypes(typeEnv, decl.alias, imported.typeExports);
+    const imported = imports.get(decl.path);
+    if (!imported) throw new Error(`unknown import ${decl.path}`);
+    addImport(env, typeEnv, decl.clause, imported);
     addAdts(adts, imported.adts);
   }
   for (const decl of module.decls) inferDecl(decl, env, exports, typeEnv, typeExports, adts, types);
@@ -56,12 +56,46 @@ function isDecl(value: Decl | Expr): value is Decl {
   return value.kind === "ImportDecl" || value.kind === "LetDecl" || value.kind === "TypeDecl";
 }
 
+function addImport(env: Env, typeEnv: TypeEnv, clause: ImportClause, imported: InferResult) {
+  if (clause.kind === "Namespace") {
+    addQualifiedImport(env, clause.alias, imported.exports);
+    addQualifiedTypes(typeEnv, clause.alias, imported.typeExports);
+    return;
+  }
+  const values = new Set<string>();
+  const types = new Set<string>();
+  for (const spec of clause.specs) {
+    const local = spec.alias ?? spec.name;
+    const value = imported.exports.get(spec.name);
+    const type = imported.typeExports.get(spec.name);
+    if (!value && !type) throw new Error(`unknown import ${spec.name}`);
+    if (value) {
+      if (values.has(local) || env.has(local)) throw new Error(`duplicate value import ${local}`);
+      values.add(local);
+      env.set(local, value);
+    }
+    if (type) {
+      if (types.has(local) || typeEnv.has(local)) throw new Error(`duplicate type import ${local}`);
+      types.add(local);
+      typeEnv.set(local, type);
+    }
+  }
+}
+
 function addQualifiedImport(env: Env, alias: string, imported: Env) {
-  for (const [name, scheme] of imported) env.set(`${alias}.${name}`, scheme);
+  for (const [name, scheme] of imported) {
+    const local = `${alias}.${name}`;
+    if (env.has(local)) throw new Error(`duplicate value import ${local}`);
+    env.set(local, scheme);
+  }
 }
 
 function addQualifiedTypes(typeEnv: TypeEnv, alias: string, imported: TypeEnv) {
-  for (const [name, info] of imported) typeEnv.set(`${alias}.${name}`, info);
+  for (const [name, info] of imported) {
+    const local = `${alias}.${name}`;
+    if (typeEnv.has(local)) throw new Error(`duplicate type import ${local}`);
+    typeEnv.set(local, info);
+  }
 }
 
 function addAdts(adts: Map<number, TypeDeclInfo>, imported: Map<number, TypeDeclInfo>) {
@@ -84,7 +118,7 @@ function inferDecl(
     const info = freshTypeInfo(decl.name, decl.params.length);
     adts.set(info.id, { ...decl, type: info });
     typeEnv.set(decl.name, info);
-    typeExports.set(decl.name, info);
+    if (decl.exported) typeExports.set(decl.name, info);
     const vars = new Map(decl.params.map((p) => [p, fresh(p)] as const));
     const result = named(info, decl.params.map((p) => vars.get(p)!));
     for (const c of decl.ctors) {
@@ -92,31 +126,35 @@ function inferDecl(
       const t = args.length === 0 ? result : fn(args, result);
       const scheme = generalize(env, t);
       env.set(c.name, scheme);
-      exports.set(c.name, scheme);
+      if (decl.exported) exports.set(c.name, scheme);
     }
     return;
   }
   rejectDuplicates(decl.bindings.flatMap((b) => patternBinders(b.pattern)), "binding");
   if (!decl.recursive) {
-    for (const b of decl.bindings) inferBinding(b, env, exports, typeEnv, adts, types);
+    for (const b of decl.bindings) {
+      inferBinding(b, decl.exported, env, exports, typeEnv, adts, types);
+    }
     return;
   }
   const base = new Map(env);
   for (const b of decl.bindings) {
     if (b.pattern.kind !== "PVar") throw new Error("recursive bindings must bind one name");
+    if (b.value.kind !== "Lambda") throw new Error("recursive bindings must be functions");
   }
   const placeholders = decl.bindings.map(() => fresh());
   decl.bindings.forEach((b, i) =>
     env.set((b.pattern as { name: string }).name, { vars: [], type: placeholders[i] })
   );
-  decl.bindings.forEach((b, i) =>
-    unify(placeholders[i], inferExpr(b.value, env, typeEnv, adts, types))
-  );
+  decl.bindings.forEach((b, i) => {
+    unify(placeholders[i], inferExpr(b.value, env, typeEnv, adts, types));
+    if (b.annotation) unify(placeholders[i], typeFromAst(b.annotation, typeEnv));
+  });
   decl.bindings.forEach((b, i) => {
     const scheme = generalize(base, placeholders[i]);
     const name = (b.pattern as { name: string }).name;
     env.set(name, scheme);
-    exports.set(name, scheme);
+    if (decl.exported) exports.set(name, scheme);
   });
 }
 
@@ -130,6 +168,7 @@ function rejectDuplicates(names: string[], kind: string) {
 
 function inferBinding(
   b: Binding,
+  exported: boolean,
   env: Env,
   exports: Env,
   typeEnv: TypeEnv,
@@ -143,7 +182,7 @@ function inferBinding(
   for (const [name, type] of bound) {
     const scheme = generalize(env, type);
     env.set(name, scheme);
-    exports.set(name, scheme);
+    if (exported) exports.set(name, scheme);
   }
 }
 
@@ -180,7 +219,11 @@ function inferExpr(
       break;
     case "Lambda": {
       const local = new Map(env);
-      const params = expr.params.map((p) => inferPattern(p, fresh(), local, adts));
+      const annotationVars: TypeVarScope = new Map();
+      const binders = new Set<string>();
+      const params = expr.params.map((p) =>
+        inferParam(p, local, typeEnv, adts, annotationVars, binders)
+      );
       t = fn(params, inferExpr(expr.body, local, typeEnv, adts, types));
       break;
     }
@@ -211,12 +254,15 @@ function inferExpr(
     }
     case "Block": {
       const local = new Map(env);
+      const localTypes = new Map(typeEnv);
+      const outerTypeIds = new Set([...typeEnv.values()].map((info) => info.id));
       expr.statements.forEach((s) =>
         isDecl(s)
-          ? inferDecl(s, local, new Map(), typeEnv, new Map(), adts, types)
-          : inferExpr(s, local, typeEnv, adts, types)
+          ? inferDecl(s, local, new Map(), localTypes, new Map(), adts, types)
+          : inferExpr(s, local, localTypes, adts, types)
       );
-      t = inferExpr(expr.result, local, typeEnv, adts, types);
+      t = inferExpr(expr.result, local, localTypes, adts, types);
+      if (mentionsLocalType(t, outerTypeIds)) throw new Error("local type escapes scope");
       break;
     }
     case "Binary": {
@@ -251,7 +297,7 @@ function inferExpr(
 }
 
 function checkExhaustive(patterns: Pattern[], valueType: Ty, adts: Map<number, TypeDeclInfo>) {
-  if (patterns.some((p) => p.kind === "PWildcard")) return;
+  if (patterns.some(isIrrefutable)) return;
   const scrutinee = prune(valueType);
   if (scrutinee.tag !== "named") {
     throw new Error("non-exhaustive match: non-sum matches require _");
@@ -269,6 +315,25 @@ function checkExhaustive(patterns: Pattern[], valueType: Ty, adts: Map<number, T
 
 function baseName(name: string): string {
   return name.split(".").at(-1)!;
+}
+
+function isIrrefutable(pattern: Pattern): boolean {
+  if (pattern.kind === "PWildcard" || pattern.kind === "PVar") return true;
+  if (pattern.kind === "PTuple") return pattern.items.every(isIrrefutable);
+  return false;
+}
+
+function mentionsLocalType(t: Ty, allowed: Set<number>): boolean {
+  t = prune(t);
+  if (t.tag === "fn") {
+    return t.params.some((p) => mentionsLocalType(p, allowed)) ||
+      mentionsLocalType(t.result, allowed);
+  }
+  if (t.tag === "tuple") return t.items.some((x) => mentionsLocalType(x, allowed));
+  if (t.tag === "named") {
+    return !allowed.has(t.id) || t.args.some((x) => mentionsLocalType(x, allowed));
+  }
+  return false;
 }
 
 function inferPattern(
@@ -363,6 +428,18 @@ function patternBinders(pattern: Pattern): string[] {
     default:
       return [];
   }
+}
+
+function inferParam(
+  param: Param,
+  env: Env,
+  typeEnv: TypeEnv,
+  adts: Map<number, TypeDeclInfo>,
+  vars: TypeVarScope,
+  binders: Set<string>,
+): Ty {
+  const expected = param.annotation ? typeFromAst(param.annotation, typeEnv, vars) : fresh();
+  return inferPattern(param.pattern, expected, env, adts, binders);
 }
 
 export function describeEnv(env: Env): string {

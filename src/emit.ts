@@ -1,4 +1,4 @@
-import type { Binding, Decl, Expr, MatchArm, Module, Pattern } from "./ast.ts";
+import type { Binding, Decl, Expr, MatchArm, Module, Param, Pattern } from "./ast.ts";
 
 const reserved = new Set(["const", "let", "function", "return", "if", "else", "class", "void"]);
 
@@ -56,8 +56,10 @@ function emitNamespace(name: string, module: Module): string {
 
 function exportNames(module: Module): string[] {
   return module.decls.flatMap((d) => {
-    if (d.kind === "LetDecl") return d.bindings.flatMap((b) => patternBinders(b.pattern).map(id));
-    if (d.kind === "TypeDecl") return d.ctors.map((c) => id(c.name));
+    if (d.kind === "LetDecl" && d.exported) {
+      return d.bindings.flatMap((b) => patternBinders(b.pattern).map(id));
+    }
+    if (d.kind === "TypeDecl" && d.exported) return d.ctors.map((c) => id(c.name));
     return [];
   });
 }
@@ -114,9 +116,9 @@ function isDecl(value: Decl | Expr): value is Decl {
   return value.kind === "ImportDecl" || value.kind === "LetDecl" || value.kind === "TypeDecl";
 }
 
-function emitLambda(params: Pattern[], body: Expr): string {
+function emitLambda(params: Param[], body: Expr): string {
   const names = params.map((_, i) => `__p${i}`);
-  const guards = params.flatMap((p, i) => emitPatternBind(p, names[i]));
+  const guards = params.flatMap((p, i) => emitPatternBind(p.pattern, names[i]));
   return `(${names.join(", ")}) => {\n${guards.join("\n")}\nreturn ${emitExpr(body)};\n}`;
 }
 

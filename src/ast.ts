@@ -1,12 +1,17 @@
 export type Module = { kind: "Module"; decls: Decl[] };
 
 export type Decl =
-  | { kind: "ImportDecl"; path: string; alias: string }
-  | { kind: "LetDecl"; recursive: boolean; bindings: Binding[] }
-  | { kind: "TypeDecl"; name: string; params: string[]; ctors: CtorDecl[] };
+  | { kind: "ImportDecl"; path: string; clause: ImportClause }
+  | { kind: "LetDecl"; exported: boolean; recursive: boolean; bindings: Binding[] }
+  | { kind: "TypeDecl"; exported: boolean; name: string; params: string[]; ctors: CtorDecl[] };
 
+export type ImportClause =
+  | { kind: "Namespace"; alias: string }
+  | { kind: "Named"; specs: ImportSpec[] };
+export type ImportSpec = { name: string; alias?: string };
 export type Binding = { pattern: Pattern; annotation?: TypeExpr; value: Expr };
 export type CtorDecl = { name: string; args: TypeExpr[] };
+export type Param = { pattern: Pattern; annotation?: TypeExpr };
 
 export type Expr =
   | { kind: "Int"; value: number }
@@ -16,7 +21,7 @@ export type Expr =
   | { kind: "Void" }
   | { kind: "Var"; name: string }
   | { kind: "Tuple"; items: Expr[] }
-  | { kind: "Lambda"; params: Pattern[]; body: Expr }
+  | { kind: "Lambda"; params: Param[]; body: Expr }
   | { kind: "Call"; callee: Expr; args: Expr[] }
   | { kind: "If"; cond: Expr; thenExpr: Expr; elseExpr: Expr }
   | { kind: "Match"; value: Expr; arms: MatchArm[] }

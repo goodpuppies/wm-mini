@@ -1,10 +1,16 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { checkFile, compile, compileFile } from "../src/compiler.ts";
+import { checkFile, checkSource, compile, compileFile } from "../src/compiler.ts";
 import { parse } from "../src/parser.ts";
 
 Deno.test("parses type and let declarations", async () => {
   const ast = await parse("type Option<T> = None | Some<T>; let x = Some(1);");
   assertEquals(ast.decls.length, 2);
+});
+
+Deno.test("rejects unsupported SML and advanced Workman syntax", async () => {
+  await assertRejects(() => parse("fun id x = x;"));
+  await assertRejects(() => parse("structure Math = struct end;"));
+  await assertRejects(() => parse("infectious effect type IO<T> = Pure<T>;"));
 });
 
 Deno.test("compiles factorial and ADT match", async () => {
@@ -17,7 +23,7 @@ Deno.test("compiles factorial and ADT match", async () => {
 
 Deno.test("rejects type errors", async () => {
   await assertRejects(
-    () => compile("let nope = 1 + true;"),
+    () => checkSource("let nope = 1 + true;"),
     Error,
     "type mismatch",
   );
@@ -30,12 +36,135 @@ Deno.test("compiles file imports as implicit structures", async () => {
   assertStringIncludes(js, "Math.Just");
 });
 
+Deno.test("source-only frontend rejects imports with clear API boundary", async () => {
+  await assertRejects(
+    () => checkSource('from "./math.wm" import * as Math; let x = 1;'),
+    Error,
+    "source strings with imports require checkFile",
+  );
+});
+
 Deno.test("supports long type constructors from imported files", async () => {
   const dir = await Deno.makeTempDir();
-  await Deno.writeTextFile(`${dir}/box.wm`, "type Box<T> = Box<T>; let make = (x) => { Box(x) };");
+  await Deno.writeTextFile(
+    `${dir}/box.wm`,
+    "export type Box<T> = Box<T>; export let make = (x) => { Box(x) };",
+  );
   await Deno.writeTextFile(
     `${dir}/main.wm`,
     'from "./box.wm" import * as Boxed; let x: Boxed.Box<Number> = Boxed.make(1);',
+  );
+  await checkFile(`${dir}/main.wm`);
+});
+
+Deno.test("supports named imports for values constructors and types", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(
+    `${dir}/option.wm`,
+    "export type Option<T> = None | Some<T>; export let make = (x) => { Some(x) };",
+  );
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    `
+      from "./option.wm" import { Option, Some, None, make as wrap };
+      let value: Option<Number> = wrap(1);
+      let get = match(value) => {
+        Some(x) => { x },
+        None => { 0 },
+      };
+    `,
+  );
+  await checkFile(`${dir}/main.wm`);
+});
+
+Deno.test("named imports reject missing members", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/lib.wm`, "export let present = 1;");
+  await Deno.writeTextFile(`${dir}/main.wm`, 'from "./lib.wm" import { missing }; let x = 1;');
+  await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "unknown import missing");
+});
+
+Deno.test("rejects duplicate imported bindings in the same namespace", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/lib.wm`, "export let present = 1;");
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    'from "./lib.wm" import { present, present as present }; let x = present;',
+  );
+  await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "duplicate value import present");
+});
+
+Deno.test("rejects duplicate qualified imports from repeated namespace aliases", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/a.wm`, "export let value = 1;");
+  await Deno.writeTextFile(`${dir}/b.wm`, "export let value = 2;");
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    `
+      from "./a.wm" import * as Lib;
+      from "./b.wm" import * as Lib;
+      let x = Lib.value;
+    `,
+  );
+  await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "duplicate value import Lib.value");
+});
+
+Deno.test("rejects duplicate named imports across import declarations", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/a.wm`, "export let value = 1;");
+  await Deno.writeTextFile(`${dir}/b.wm`, "export let value = 2;");
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    `
+      from "./a.wm" import { value };
+      from "./b.wm" import { value };
+      let x = value;
+    `,
+  );
+  await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "duplicate value import value");
+});
+
+Deno.test("local declarations shadow imported bindings", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/lib.wm`, "export let value = 1;");
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    `
+      from "./lib.wm" import { value };
+      let value = "local";
+      let ok = value == "local";
+    `,
+  );
+  await checkFile(`${dir}/main.wm`);
+});
+
+Deno.test("imports only see explicit exports", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/lib.wm`, "let hidden = 1; export let visible = hidden + 1;");
+  await Deno.writeTextFile(`${dir}/main.wm`, 'from "./lib.wm" import { hidden }; let x = 1;');
+  await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "unknown import hidden");
+});
+
+Deno.test("namespace imports only expose explicit exports", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/lib.wm`, "let hidden = 1; export let visible = hidden + 1;");
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    'from "./lib.wm" import * as Lib; let x = Lib.hidden;',
+  );
+  await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "unknown name Lib.hidden");
+});
+
+Deno.test("supports transitive file imports", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/base.wm`, "export let id = (x) => { x };");
+  await Deno.writeTextFile(
+    `${dir}/mid.wm`,
+    'from "./base.wm" import * as Base; export let keep = (x) => { Base.id(x) };',
+  );
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    'from "./mid.wm" import * as Mid; let a = Mid.keep(1); let b = Mid.keep("s");',
   );
   await checkFile(`${dir}/main.wm`);
 });
@@ -47,20 +176,72 @@ Deno.test("rejects import cycles", async () => {
   await assertRejects(() => checkFile(`${dir}/a.wm`), Error, "import cycle");
 });
 
+Deno.test("same-spelled datatypes from different files are nominally distinct", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(
+    `${dir}/a.wm`,
+    "export type Box = Box; export let make = () => { Box };",
+  );
+  await Deno.writeTextFile(
+    `${dir}/b.wm`,
+    "export type Box = Box; export let make = () => { Box };",
+  );
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    `
+      from "./a.wm" import * as A;
+      from "./b.wm" import * as B;
+      let bad: A.Box = B.make();
+    `,
+  );
+  await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "type mismatch");
+});
+
 Deno.test("generalizes recursive function bindings after solving", async () => {
-  await compile('let rec id = (x) => { x }; let a = id(1); let b = id("s");');
+  await checkSource('let rec id = (x) => { x }; let a = id(1); let b = id("s");');
+});
+
+Deno.test("rejects recursive non-function bindings", async () => {
+  await assertRejects(
+    () => checkSource("let rec value = 1;"),
+    Error,
+    "recursive bindings must be functions",
+  );
+});
+
+Deno.test("checks annotations on recursive function bindings", async () => {
+  await checkSource(`
+    let rec id: (t) => t = (x) => { x };
+    let a = id(1);
+    let b = id("s");
+  `);
+  await assertRejects(
+    () => checkSource("let rec bad: (Number) => String = (x) => { x };"),
+    Error,
+    "type mismatch",
+  );
 });
 
 Deno.test("rejects duplicate pattern binders", async () => {
   await assertRejects(
-    () => compile("let bad = ((x, x)) => { x };"),
+    () => checkSource("let bad = ((x, x)) => { x };"),
     Error,
     "duplicate pattern binder",
+  );
+  await assertRejects(
+    () => checkSource("let bad = (x, x) => { x };"),
+    Error,
+    "duplicate pattern binder x",
+  );
+  await assertRejects(
+    () => checkSource("let bad = match(x, x) => { _ => { 0 } };"),
+    Error,
+    "duplicate pattern binder x",
   );
 });
 
 Deno.test("supports Workman tuple destructuring let bindings", async () => {
-  await compile(`
+  await checkSource(`
     let (a, b) = (1, "x");
     let use_a = a + 1;
     let use_b = b == "x";
@@ -68,7 +249,7 @@ Deno.test("supports Workman tuple destructuring let bindings", async () => {
 });
 
 Deno.test("generalizes destructured let binding components", async () => {
-  await compile(`
+  await checkSource(`
     let (id_a, id_b) = ((x) => { x }, (y) => { y });
     let a = id_a(1);
     let b = id_a("s");
@@ -79,7 +260,7 @@ Deno.test("generalizes destructured let binding components", async () => {
 
 Deno.test("rejects duplicate tuple let binders in the same declaration", async () => {
   await assertRejects(
-    () => compile("let (x, x) = (1, 2);"),
+    () => checkSource("let (x, x) = (1, 2);"),
     Error,
     "duplicate binding x",
   );
@@ -87,14 +268,117 @@ Deno.test("rejects duplicate tuple let binders in the same declaration", async (
 
 Deno.test("rejects recursive destructuring let bindings", async () => {
   await assertRejects(
-    () => compile("let rec (a, b) = (1, 2);"),
+    () => checkSource("let rec (a, b) = (1, 2);"),
     Error,
     "recursive bindings must bind one name",
   );
 });
 
+Deno.test("rejects duplicate type parameters and constructors", async () => {
+  await assertRejects(
+    () => checkSource("type Bad<T, T> = Bad<T>;"),
+    Error,
+    "duplicate type parameter T",
+  );
+  await assertRejects(
+    () => checkSource("type Bad = A | A;"),
+    Error,
+    "duplicate constructor A",
+  );
+});
+
+Deno.test("statement-only blocks infer Void", async () => {
+  await checkSource(`
+    let do_it = () => {
+      print("side effect");
+    };
+    let result: Void = do_it();
+  `);
+});
+
+Deno.test("empty blocks infer Void", async () => {
+  await checkSource("let nothing: Void = {}; ");
+});
+
+Deno.test("if branches can be statement-only Void blocks", async () => {
+  await checkSource(`
+    let branch: Void = if (true) {
+      print("then");
+    } else {
+      print("else");
+    };
+  `);
+});
+
+Deno.test("block-local type names do not leak outward", async () => {
+  await assertRejects(
+    () =>
+      checkSource(`
+        let make = () => {
+          type Local = Local;
+          let x = Local;
+          x
+        };
+      `),
+    Error,
+    "local type escapes scope",
+  );
+  await assertRejects(
+    () =>
+      checkSource(`
+        let use = () => {
+          type Local = Local;
+          let x: Local = Local;
+          void
+        };
+        let y: Local = void;
+      `),
+    Error,
+    "unknown type Local",
+  );
+});
+
+Deno.test("supports typed lambda parameters", async () => {
+  await checkSource(`
+    let inc = (x: Number) => { x + 1 };
+    let ok = inc(41);
+  `);
+});
+
+Deno.test("typed lambda parameters reject incompatible calls", async () => {
+  await assertRejects(
+    () => checkSource('let inc = (x: Number) => { x + 1 }; let bad = inc("no");'),
+    Error,
+    "type mismatch",
+  );
+});
+
+Deno.test("supports annotations on tuple lambda parameters", async () => {
+  await checkSource(`
+    let first = ((x, _): (Number, String)) => { x };
+    let value = first((1, "a"));
+  `);
+});
+
+Deno.test("reuses repeated type variables within an annotation", async () => {
+  await checkSource(`
+    let first_same = (x: t, y: t) => { x };
+    let a = first_same(1, 2);
+    let b = first_same("a", "b");
+  `);
+  await assertRejects(
+    () =>
+      checkSource(`
+        let first_same = (x: t, y: t) => { x };
+        let bad = first_same(1, "s");
+      `),
+    Error,
+    "type mismatch",
+  );
+});
+
 Deno.test("constructor fields bind while bare tuple identifiers pin", async () => {
-  await compile(`
+  await checkSource(`
     type Option<T> = None | Some<T>;
     let x = 1;
     let from_ctor = match(opt) => {
@@ -110,15 +394,27 @@ Deno.test("constructor fields bind while bare tuple identifiers pin", async () =
 
 Deno.test("bare match identifiers must already be in scope", async () => {
   await assertRejects(
-    () => compile("let bad = match(x) => { y => { 1 }, _ => { 0 } };"),
+    () => checkSource("let bad = match(x) => { y => { 1 }, _ => { 0 } };"),
     Error,
     "unknown pinned pattern y",
   );
 });
 
+Deno.test("explicit binder patterns are exhaustive", async () => {
+  await checkSource(`
+    let id_match = match(value) => {
+      Var(x) => { x },
+    };
+    let first_pair = match(pair) => {
+      (Var(x), Var(_y)) => { x },
+    };
+  `);
+});
+
 Deno.test("requires exhaustive matches for closed sums", async () => {
   await assertRejects(
-    () => compile("type Option<T> = None | Some<T>; let bad = match(opt) => { None => { 0 } };"),
+    () =>
+      checkSource("type Option<T> = None | Some<T>; let bad = match(opt) => { None => { 0 } };"),
     Error,
     "missing Some",
   );
@@ -126,7 +422,7 @@ Deno.test("requires exhaustive matches for closed sums", async () => {
 
 Deno.test("requires wildcard for non-sum matches", async () => {
   await assertRejects(
-    () => compile("let bad = match(n) => { 0 => { 1 } };"),
+    () => checkSource("let bad = match(n) => { 0 => { 1 } };"),
     Error,
     "non-sum matches require _",
   );
