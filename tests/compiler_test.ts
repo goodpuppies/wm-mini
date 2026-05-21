@@ -2,6 +2,19 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { pathToFileURL } from "node:url";
 import { checkFile, checkSource, compile, compileFile } from "../src/compiler.ts";
 import { parse } from "../src/parser.ts";
+import { show } from "../src/types.ts";
+
+function expectInferredType(
+  env: Map<string, { vars: number[]; type: unknown }>,
+  name: string,
+  expectedType: string,
+  expectedQuantifiers?: number,
+) {
+  const scheme = env.get(name);
+  if (!scheme) throw new Error(`missing inferred binding ${name}`);
+  assertEquals(show(scheme.type as never), expectedType);
+  if (expectedQuantifiers !== undefined) assertEquals(scheme.vars.length, expectedQuantifiers);
+}
 
 Deno.test("parses type and let declarations", async () => {
   const ast = await parse("type Option<T> = None | Some<T>; let x = Some(1);");
@@ -28,6 +41,36 @@ Deno.test("rejects type errors", async () => {
     Error,
     "type mismatch",
   );
+});
+
+Deno.test("reports inferred principal type shapes for core bindings", async () => {
+  const result = await checkSource(`
+    let id = (x) => { x };
+    let fst = (x, y) => { x };
+    let pair = (x, y) => { (x, y) };
+  `);
+  expectInferredType(result.env, "id", "('a) => 'a", 1);
+  expectInferredType(result.env, "fst", "(('a, 'b)) => 'a", 2);
+  expectInferredType(result.env, "pair", "(('a, 'b)) => ('a, 'b)", 2);
+});
+
+Deno.test("inferred match function type reflects constructor payload constraints", async () => {
+  const result = await checkSource(`
+    type Option<T> = None | Some<T>;
+    let get = match(opt) => {
+      Some(x) => { x },
+      None => { 0 },
+    };
+  `);
+  expectInferredType(result.env, "get", "(Option<Number>) => Number", 0);
+});
+
+Deno.test("single-item alias declarations are transparent in inferred types", async () => {
+  const result = await checkSource(`
+    type MyNumber = Number;
+    let inc = (x: MyNumber) => { x + 1 };
+  `);
+  expectInferredType(result.env, "inc", "(Number) => Number", 0);
 });
 
 Deno.test("compiles file imports as implicit structures", async () => {
@@ -73,7 +116,7 @@ Deno.test("supports long type constructors from imported files", async () => {
   const dir = await Deno.makeTempDir();
   await Deno.writeTextFile(
     `${dir}/box.wm`,
-    "export type Box<T> = Box<T>; export let make = (x) => { Box(x) };",
+    "export type Box<T> = | Box<T>; export let make = (x) => { Box(x) };",
   );
   await Deno.writeTextFile(
     `${dir}/main.wm`,
@@ -225,11 +268,11 @@ Deno.test("same-spelled datatypes from different files are nominally distinct", 
   const dir = await Deno.makeTempDir();
   await Deno.writeTextFile(
     `${dir}/a.wm`,
-    "export type Box = Box; export let make = () => { Box };",
+    "export type Box = | Box; export let make = () => { Box };",
   );
   await Deno.writeTextFile(
     `${dir}/b.wm`,
-    "export type Box = Box; export let make = () => { Box };",
+    "export type Box = | Box; export let make = () => { Box };",
   );
   await Deno.writeTextFile(
     `${dir}/main.wm`,
@@ -246,12 +289,9 @@ Deno.test("generalizes recursive function bindings after solving", async () => {
   await checkSource('let rec id = (x) => { x }; let a = id(1); let b = id("s");');
 });
 
-Deno.test("rejects recursive non-function bindings", async () => {
-  await assertRejects(
-    () => checkSource("let rec value = 1;"),
-    Error,
-    "recursive bindings must be functions",
-  );
+Deno.test("allows recursive non-function bindings as general recursion", async () => {
+  await checkSource("let rec value = 1;");
+  await checkSource("let rec x = x;");
 });
 
 Deno.test("checks annotations on recursive function bindings", async () => {
@@ -350,10 +390,21 @@ Deno.test("rejects duplicate type parameters and constructors", async () => {
 
 Deno.test("rejects duplicate type declarations in the same scope", async () => {
   await assertRejects(
-    () => checkSource("type Box = Box; type Box = Box;"),
+    () => checkSource("type Box = Number; type Box = String;"),
     Error,
     "duplicate type declaration Box",
   );
+});
+
+Deno.test("disambiguates alias and variant single-item type bodies", async () => {
+  await checkSource("type MyNumber = Number; let x: MyNumber = 1;");
+  await assertRejects(
+    () => checkSource("type MyNumber = Number; let bad = MyNumber;"),
+    Error,
+    "unknown name MyNumber",
+  );
+  await checkSource("type Token = | Token; let x: Token = Token;");
+  await checkSource("type Flag = On | Off; let x: Flag = On;");
 });
 
 Deno.test("statement-only blocks infer Void", async () => {
@@ -384,7 +435,7 @@ Deno.test("block-local type names do not leak outward", async () => {
     () =>
       checkSource(`
         let make = () => {
-          type Local = Local;
+          type Local = | Local;
           let x = Local;
           x
         };
@@ -396,7 +447,7 @@ Deno.test("block-local type names do not leak outward", async () => {
     () =>
       checkSource(`
         let use = () => {
-          type Local = Local;
+          type Local = | Local;
           let x: Local = Local;
           void
         };

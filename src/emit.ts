@@ -32,6 +32,7 @@ export function emitBundle(units: { name: string; module: Module }[], entry: Mod
 function emitDecl(decl: Decl): string[] {
   if (decl.kind === "ImportDecl") return [];
   if (decl.kind === "TypeDecl") {
+    if (decl.alias) return [];
     return decl.ctors.map((c) =>
       c.args.length === 0
         ? `const ${id(c.name)} = Object.freeze({ tag: ${JSON.stringify(c.name)}, args: [] });`
@@ -102,7 +103,7 @@ function emitExpr(expr: Expr): string {
     case "Match":
       return emitMatch(expr.value, expr.arms);
     case "Block":
-      return `(() => {\n${expr.statements.map(emitStatement).join("\n")}\nreturn ${
+      return `(() => {\n${expr.items.map(emitBlockItem).join("\n")}\nreturn ${
         emitExpr(expr.result)
       };\n})()`;
     case "Binary":
@@ -114,8 +115,8 @@ function emitExpr(expr: Expr): string {
   }
 }
 
-function emitStatement(statement: Decl | Expr): string {
-  return isDecl(statement) ? emitDecl(statement).join("\n") : `${emitExpr(statement)};`;
+function emitBlockItem(item: Decl | Expr): string {
+  return isDecl(item) ? emitDecl(item).join("\n") : `${emitExpr(item)};`;
 }
 
 function isDecl(value: Decl | Expr): value is Decl {

@@ -156,11 +156,21 @@ function inferDecl(
   if (decl.kind === "TypeDecl") {
     if (typeEnv.has(decl.name)) throw new Error(`duplicate type declaration ${decl.name}`);
     rejectDuplicates(decl.params, "type parameter");
-    rejectDuplicates(decl.ctors.map((c) => c.name), "constructor");
     const info = freshTypeInfo(decl.name, decl.params.length);
-    adts.set(info.id, { ...decl, type: info });
     typeEnv.set(decl.name, info);
     if (decl.exported) typeExports.set(decl.name, info);
+    if (decl.alias) {
+      const vars = new Map(decl.params.map((p) => [p, fresh(p)] as const));
+      info.alias = typeFromAst(decl.alias, typeEnv, vars);
+      info.aliasParams = decl.params.map((p) => {
+        const v = prune(vars.get(p)!);
+        if (v.tag !== "var") throw new Error("invalid type alias parameter");
+        return v.id;
+      });
+      return;
+    }
+    rejectDuplicates(decl.ctors.map((c) => c.name), "constructor");
+    adts.set(info.id, { ...decl, type: info });
     const vars = new Map(decl.params.map((p) => [p, fresh(p)] as const));
     const result = named(info, decl.params.map((p) => vars.get(p)!));
     for (const c of decl.ctors) {
@@ -191,7 +201,6 @@ function inferDecl(
   const base = new Map(env);
   for (const b of decl.bindings) {
     if (b.pattern.kind !== "PVar") throw new Error("recursive bindings must bind one name");
-    if (b.value.kind !== "Lambda") throw new Error("recursive bindings must be functions");
   }
   const placeholders = decl.bindings.map(() => fresh());
   decl.bindings.forEach((b, i) =>
@@ -304,7 +313,7 @@ function inferExpr(
       const local = new Map(env);
       const localTypes = new Map(typeEnv);
       const outerTypeIds = new Set([...typeEnv.values()].map((info) => info.id));
-      expr.statements.forEach((s) =>
+      expr.items.forEach((s) =>
         isDecl(s)
           ? inferDecl(s, local, new Map(), localTypes, new Map(), adts, types, warnings)
           : inferExpr(s, local, localTypes, adts, types, warnings)

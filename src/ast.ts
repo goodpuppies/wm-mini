@@ -3,7 +3,15 @@ export type Module = { kind: "Module"; decls: Decl[] };
 export type Decl =
   | { kind: "ImportDecl"; path: string; clause: ImportClause }
   | { kind: "LetDecl"; exported: boolean; recursive: boolean; bindings: Binding[] }
-  | { kind: "TypeDecl"; exported: boolean; name: string; params: string[]; ctors: CtorDecl[] };
+  | {
+    kind: "TypeDecl";
+    exported: boolean;
+    name: string;
+    params: string[];
+    ctors: CtorDecl[];
+    alias?: TypeExpr;
+    hasLeadingPipe?: boolean;
+  };
 
 export type ImportClause =
   | { kind: "Namespace"; alias: string }
@@ -25,7 +33,7 @@ export type Expr =
   | { kind: "Call"; callee: Expr; args: Expr[] }
   | { kind: "If"; cond: Expr; thenExpr: Expr; elseExpr: Expr }
   | { kind: "Match"; value: Expr; arms: MatchArm[] }
-  | { kind: "Block"; statements: (Decl | Expr)[]; result: Expr }
+  | { kind: "Block"; items: (Decl | Expr)[]; result: Expr }
   | { kind: "Binary"; op: string; left: Expr; right: Expr }
   | { kind: "Unary"; op: string; value: Expr };
 

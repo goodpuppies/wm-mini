@@ -10,7 +10,7 @@ export type Ty =
 export type Scheme = { vars: number[]; type: Ty };
 export type Env = Map<string, Scheme>;
 export type TypeEnv = Map<string, TypeInfo>;
-export type TypeInfo = { id: number; name: string; arity: number };
+export type TypeInfo = { id: number; name: string; arity: number; alias?: Ty; aliasParams?: number[] };
 export type TypeDeclInfo = { type: TypeInfo; name: string; params: string[]; ctors: CtorDecl[] };
 export type TypeVarScope = Map<string, Ty>;
 
@@ -133,6 +133,29 @@ export function typeFromAst(
   typeEnv: TypeEnv,
   vars: TypeVarScope = new Map(),
 ): Ty {
+  const instantiateAlias = (template: Ty, params: number[], args: Ty[]): Ty => {
+    const subst = new Map<number, Ty>();
+    params.forEach((id, i) => subst.set(id, args[i]));
+    const freshen = new Map<number, Ty>();
+    const go = (t: Ty): Ty => {
+      t = prune(t);
+      if (t.tag === "var") {
+        const bound = subst.get(t.id);
+        if (bound) return bound;
+        const existing = freshen.get(t.id);
+        if (existing) return existing;
+        const created = fresh(t.name);
+        freshen.set(t.id, created);
+        return created;
+      }
+      if (t.tag === "fn") return fn(t.params.map(go), go(t.result));
+      if (t.tag === "tuple") return tuple(t.items.map(go));
+      if (t.tag === "named") return { ...t, args: t.args.map(go) };
+      return t;
+    };
+    return go(template);
+  };
+
   if (expr.kind === "TVar") {
     const existing = vars.get(expr.name);
     if (existing) return existing;
@@ -149,6 +172,10 @@ export function typeFromAst(
   if (!info) throw new Error(`unknown type ${expr.name}`);
   if (info.arity !== expr.args.length) {
     throw new Error(`${expr.name} expects ${info.arity} type arguments`);
+  }
+  if (info.alias) {
+    const args = expr.args.map((x) => typeFromAst(x, typeEnv, vars));
+    return instantiateAlias(info.alias, info.aliasParams ?? [], args);
   }
   if (expr.args.length === 0 && ["Number", "Bool", "String", "Void"].includes(expr.name)) {
     return prim(expr.name);

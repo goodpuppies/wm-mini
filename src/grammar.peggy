@@ -1,5 +1,11 @@
 {
   function mod(decls) { return { kind: "Module", decls }; }
+  function asCtor(expr) {
+    if (expr.kind !== "TName" || expr.name.includes(".")) {
+      throw new Error("variant members must be constructor names");
+    }
+    return { name: expr.name, args: expr.args };
+  }
 }
 
 Start = _ decls:(_ d:TopDecl { return d; })* _ EOF { return mod(decls); }
@@ -44,13 +50,34 @@ LetCtorPattern
 LetCtorPatternList = first:LetCtorPattern rest:(_ "," _ p:LetCtorPattern { return p; })* _ ","? { return [first, ...rest]; }
 
 TypeDecl
-  = exported:ExportModifier? "type" __ name:Constructor params:TypeParams? _ "=" _ ctors:CtorDeclList _ ";"
-    { return { kind: "TypeDecl", exported: !!exported, name, params: params ?? [], ctors }; }
+  = exported:ExportModifier? "type" __ name:Constructor params:TypeParams? _ "=" _ body:TypeDeclBody _ ";"
+    {
+      return {
+        kind: "TypeDecl",
+        exported: !!exported,
+        name,
+        params: params ?? [],
+        ctors: body.ctors,
+        alias: body.alias,
+        hasLeadingPipe: body.hasLeadingPipe,
+      };
+    }
+
+TypeDeclBody
+  = hasLeadingPipe:("|" _ { return true; })? first:TypeExpr rest:(_ "|" _ t:TypeExpr { return t; })*
+    {
+      if (!hasLeadingPipe && rest.length === 0) {
+        return { alias: first, ctors: [], hasLeadingPipe: false };
+      }
+      const members = [first, ...rest];
+      return {
+        alias: undefined,
+        ctors: members.map(asCtor),
+        hasLeadingPipe: !!hasLeadingPipe,
+      };
+    }
 
 ExportModifier = "export" __
-
-CtorDeclList = first:CtorDecl rest:(_ "|" _ c:CtorDecl { return c; })* { return [first, ...rest]; }
-CtorDecl = name:Constructor args:("<" _ xs:TypeList _ ">" { return xs; })? { return { name, args: args ?? [] }; }
 
 Expr = IfExpr / MatchFn / MatchExpr / Lambda / Binary
 
@@ -107,11 +134,11 @@ TupleOrGroup
   / "(" _ e:Expr _ ")" { return e; }
 
 Block
-  = "{" _ statements:BlockStatement* result:Expr? _ "}" {
-      return { kind: "Block", statements, result: result ?? { kind: "Void" } };
+  = "{" _ items:BlockItem* result:Expr? _ "}" {
+      return { kind: "Block", items, result: result ?? { kind: "Void" } };
     }
 
-BlockStatement
+BlockItem
   = d:TypeDecl _ { return d; }
   / d:LetDecl _ { return d; }
   / &(Expr _ ";") e:Expr _ ";" _ { return e; }
