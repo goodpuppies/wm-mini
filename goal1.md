@@ -41,7 +41,7 @@ Module/frontend target:
 
 ## Workman Surface
 
-Use `research/workmangr/docs/reference` and `research/workman/workmansyntaxguide.md` as the syntax
+Use `research/workmangr/docs/reference` and `research/workmangr/docs/workmansyntaxguide.md` as the syntax
 guide.
 
 The source syntax should be Workman syntax:
