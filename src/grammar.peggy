@@ -186,7 +186,8 @@ Block
     }
 
 BlockItem
-  = d:TypeDecl _ { return d; }
+  = d:RecordDecl _ { return d; }
+  / d:TypeDecl _ { return d; }
   / d:LetDecl _ { return d; }
   / &(Expr _ ";") e:Expr _ ";" _ { return e; }
 

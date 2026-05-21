@@ -1,0 +1,128 @@
+import type { Expr } from "../ast.ts";
+import {
+  type Env,
+  fresh,
+  instantiate,
+  instantiateRecordFields,
+  named,
+  prune,
+  show,
+  type Ty,
+  type TypeEnv,
+  type TypeInfo,
+} from "../types.ts";
+import { constrain } from "./shared.ts";
+
+type InferValue = (expr: Expr) => Ty;
+type NamedTy = Extract<Ty, { tag: "named" }>;
+
+export function inferDottedVar(name: string, env: Env, typeEnv: TypeEnv): Ty {
+  const scheme = env.get(name);
+  if (scheme) return instantiate(scheme);
+  const dot = name.lastIndexOf(".");
+  if (dot < 0) throw new Error(`unknown name ${name}`);
+  const baseName = name.slice(0, dot);
+  const field = name.slice(dot + 1);
+  try {
+    return inferRecordField(inferDottedVar(baseName, env, typeEnv), field, typeEnv);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("unknown name ")) {
+      throw new Error(`unknown name ${name}`);
+    }
+    throw error;
+  }
+}
+
+export function inferRecordExpr(
+  expr: Extract<Expr, { kind: "Record" }>,
+  typeEnv: TypeEnv,
+  inferValue: InferValue,
+  expected?: Ty,
+): Ty {
+  rejectDuplicateFields(expr.fields.map((field) => field.name));
+  const result = expectedRecord(expected, typeEnv) ??
+    freshRecord(recordCandidate(typeEnv, expr.fields.map((field) => field.name)));
+  const fieldTypes = instantiateRecordFields(recordInfo(result, typeEnv), result.args);
+  const expectedNames = new Set(fieldTypes.map((field) => field.name));
+  for (const field of expr.fields) {
+    if (!expectedNames.has(field.name)) {
+      throw new Error(`${result.name} has no field ${field.name}`);
+    }
+    const expectedField = fieldTypes.find((item) => item.name === field.name)!;
+    constrain(inferValue(field.value), expectedField.type);
+  }
+  if (fieldTypes.length !== expr.fields.length) {
+    throw new Error(`missing record field for ${result.name}`);
+  }
+  return result;
+}
+
+function inferRecordField(base: Ty, field: string, typeEnv: TypeEnv): Ty {
+  const target = prune(base);
+  if (target.tag === "named") {
+    const fields = instantiateRecordFields(recordInfo(target, typeEnv), target.args);
+    const found = fields.find((item) => item.name === field);
+    if (!found) throw new Error(`${target.name} has no field ${field}`);
+    return found.type;
+  }
+  if (target.tag === "var") {
+    const info = recordCandidate(typeEnv, [field], "contains", `ambiguous record field ${field}`);
+    const record = freshRecord(info);
+    constrain(target, record);
+    return instantiateRecordFields(info, record.args).find((item) => item.name === field)!.type;
+  }
+  throw new Error(`type ${show(base)} has no field ${field}`);
+}
+
+function expectedRecord(expected: Ty | undefined, typeEnv: TypeEnv): NamedTy | undefined {
+  if (!expected) return undefined;
+  const target = prune(expected);
+  if (target.tag !== "named") throw new Error("record literal requires a record type");
+  recordInfo(target, typeEnv);
+  return target;
+}
+
+function freshRecord(info: TypeInfo): NamedTy {
+  return named(info, Array.from({ length: info.arity }, () => fresh())) as NamedTy;
+}
+
+function recordInfo(type: NamedTy, typeEnv: TypeEnv): TypeInfo {
+  const info = [...typeEnv.values()].find((candidate) => candidate.id === type.id);
+  if (!info?.recordFields) throw new Error(`${type.name} is not a record type`);
+  return info;
+}
+
+function recordCandidate(
+  typeEnv: TypeEnv,
+  names: string[],
+  mode: "exact" | "contains" = "exact",
+  ambiguous = "ambiguous record type",
+): TypeInfo {
+  const candidates = findRecordTypes(typeEnv, names, mode);
+  if (candidates.length === 0) throw new Error("no matching record type");
+  if (candidates.length > 1) throw new Error(ambiguous);
+  return candidates[0];
+}
+
+function findRecordTypes(
+  typeEnv: TypeEnv,
+  names: string[],
+  mode: "exact" | "contains",
+): TypeInfo[] {
+  const wanted = [...names].sort();
+  return [...typeEnv.values()].filter((info) => {
+    if (!info.recordFields) return false;
+    const fields = info.recordFields.map((field) => field.name);
+    if (mode === "contains") return wanted.every((name) => fields.includes(name));
+    return fields.length === wanted.length &&
+      [...fields].sort().every((name, i) => name === wanted[i]);
+  });
+}
+
+function rejectDuplicateFields(names: string[]) {
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (seen.has(name)) throw new Error(`duplicate record field ${name}`);
+    seen.add(name);
+  }
+}

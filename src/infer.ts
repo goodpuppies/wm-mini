@@ -9,7 +9,6 @@ import {
   freshTypeInfo,
   generalize,
   instantiate,
-  instantiateRecordFields,
   named,
   NumberTy,
   prune,
@@ -21,7 +20,6 @@ import {
   TypeDeclInfo,
   TypeEnv,
   typeFromAst,
-  TypeInfo,
   TypeVarScope,
   VoidTy,
 } from "./types.ts";
@@ -32,6 +30,7 @@ import {
   patternBinders,
   showPattern,
 } from "./infer/patterns.ts";
+import { inferDottedVar, inferRecordExpr } from "./infer/records.ts";
 import { callArg, constrain } from "./infer/shared.ts";
 
 export type InferResult = {
@@ -240,8 +239,16 @@ function inferBinding(
   adts: Map<number, TypeDeclInfo>,
   types: Map<Expr, Ty>,
 ): { bound: Map<string, Ty>; refutable: boolean } {
-  const t = inferExpr(b.value, env, typeEnv, adts, types);
-  if (b.annotation) constrain(t, typeFromAst(b.annotation, typeEnv));
+  const annotated = b.annotation ? typeFromAst(b.annotation, typeEnv) : undefined;
+  const t = annotated && b.value.kind === "Record"
+    ? inferRecordExpr(
+      b.value,
+      typeEnv,
+      (value) => inferExpr(value, env, typeEnv, adts, types),
+      annotated,
+    )
+    : inferExpr(b.value, env, typeEnv, adts, types);
+  if (annotated) constrain(t, annotated);
   const bound = new Map<string, Ty>();
   inferBindingPattern(b.pattern, t, env, typeEnv, bound);
   const refutable = !isVectorExhaustive([[b.pattern]], [t], typeEnv, adts);
@@ -284,7 +291,11 @@ function inferExpr(
       t = tuple(expr.items.map((x) => inferExpr(x, env, typeEnv, adts, types, warnings)));
       break;
     case "Record":
-      t = inferRecordExpr(expr, env, typeEnv, adts, types, warnings);
+      t = inferRecordExpr(
+        expr,
+        typeEnv,
+        (value) => inferExpr(value, env, typeEnv, adts, types, warnings),
+      );
       break;
     case "Lambda": {
       const local = new Map(env);
@@ -364,93 +375,6 @@ function inferExpr(
   }
   types.set(expr, t);
   return t;
-}
-
-function inferDottedVar(name: string, env: Env, typeEnv: TypeEnv): Ty {
-  const scheme = env.get(name);
-  if (scheme) return instantiate(scheme);
-  const dot = name.lastIndexOf(".");
-  if (dot < 0) throw new Error(`unknown name ${name}`);
-  const baseName = name.slice(0, dot);
-  const field = name.slice(dot + 1);
-  try {
-    return inferRecordField(inferDottedVar(baseName, env, typeEnv), field, typeEnv);
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith("unknown name ")) {
-      throw new Error(`unknown name ${name}`);
-    }
-    throw error;
-  }
-}
-
-function inferRecordExpr(
-  expr: Extract<Expr, { kind: "Record" }>,
-  env: Env,
-  typeEnv: TypeEnv,
-  adts: Map<number, TypeDeclInfo>,
-  types: Map<Expr, Ty>,
-  warnings: string[],
-): Ty {
-  rejectDuplicates(expr.fields.map((field) => field.name), "record field");
-  const candidates = findRecordTypes(typeEnv, expr.fields.map((field) => field.name), "exact");
-  if (candidates.length === 0) throw new Error("no matching record type");
-  if (candidates.length > 1) throw new Error("ambiguous record type");
-  const info = candidates[0];
-  const result = named(info, Array.from({ length: info.arity }, () => fresh())) as Extract<
-    Ty,
-    { tag: "named" }
-  >;
-  const fieldTypes = instantiateRecordFields(info, result.args);
-  for (const field of expr.fields) {
-    const expected = fieldTypes.find((item) => item.name === field.name)!;
-    constrain(inferExpr(field.value, env, typeEnv, adts, types, warnings), expected.type);
-  }
-  return result;
-}
-
-function inferRecordField(base: Ty, field: string, typeEnv: TypeEnv): Ty {
-  const target = prune(base);
-  if (target.tag === "named") {
-    const fields = instantiateRecordFields(recordInfo(target, typeEnv), target.args);
-    const found = fields.find((item) => item.name === field);
-    if (!found) throw new Error(`${target.name} has no field ${field}`);
-    return found.type;
-  }
-  if (target.tag === "var") {
-    const candidates = findRecordTypes(typeEnv, [field], "contains");
-    if (candidates.length === 0) throw new Error(`no record type has field ${field}`);
-    if (candidates.length > 1) throw new Error(`ambiguous record field ${field}`);
-    const info = candidates[0];
-    const record = named(info, Array.from({ length: info.arity }, () => fresh())) as Extract<
-      Ty,
-      { tag: "named" }
-    >;
-    constrain(target, record);
-    const found = instantiateRecordFields(info, record.args).find((item) => item.name === field)!;
-    return found.type;
-  }
-  throw new Error(`type ${show(base)} has no field ${field}`);
-}
-
-function recordInfo(type: Extract<Ty, { tag: "named" }>, typeEnv: TypeEnv): TypeInfo {
-  const info = [...typeEnv.values()].find((candidate) => candidate.id === type.id);
-  if (!info?.recordFields) throw new Error(`${type.name} is not a record type`);
-  return info;
-}
-
-export function findRecordTypes(
-  typeEnv: TypeEnv,
-  names: string[],
-  mode: "exact" | "contains",
-): TypeInfo[] {
-  const wanted = [...names].sort();
-  return [...typeEnv.values()].filter((info) => {
-    if (!info.recordFields) return false;
-    const fields = info.recordFields.map((field) => field.name);
-    if (mode === "contains") return wanted.every((name) => fields.includes(name));
-    return fields.length === wanted.length &&
-      [...fields].sort().every((name, i) => name === wanted[i]);
-  });
 }
 
 function inferParam(
