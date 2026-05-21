@@ -1,0 +1,78 @@
+import type { Decl, Expr, Pattern, TypeExpr } from "../ast.ts";
+import type { Ty, TypeDeclInfo, TypeEnv } from "../types.ts";
+import { isVectorExhaustive } from "./exhaustiveness.ts";
+import { showPattern } from "./patterns.ts";
+
+export function referencesTypeName(expr: TypeExpr, name: string, vars: Set<string>): boolean {
+  if (expr.kind === "TName") {
+    return (!vars.has(expr.name) && expr.name === name) ||
+      expr.args.some((arg) => referencesTypeName(arg, name, vars));
+  }
+  if (expr.kind === "TTuple") {
+    return expr.items.some((item) => referencesTypeName(item, name, vars));
+  }
+  if (expr.kind === "TFn") {
+    return expr.params.some((param) => referencesTypeName(param, name, vars)) ||
+      referencesTypeName(expr.result, name, vars);
+  }
+  return false;
+}
+
+export function hasUnguardedRecursiveRef(
+  expr: Expr,
+  names: Set<string>,
+  guarded = false,
+): boolean {
+  switch (expr.kind) {
+    case "Var":
+      return !guarded && names.has(expr.name.split(".")[0]);
+    case "Tuple":
+      return expr.items.some((item) => hasUnguardedRecursiveRef(item, names, guarded));
+    case "Record":
+      return expr.fields.some((field) => hasUnguardedRecursiveRef(field.value, names, guarded));
+    case "Lambda":
+      return hasUnguardedRecursiveRef(expr.body, names, true);
+    case "Call":
+      return hasUnguardedRecursiveRef(expr.callee, names, guarded) ||
+        expr.args.some((arg) => hasUnguardedRecursiveRef(arg, names, guarded));
+    case "If":
+      return hasUnguardedRecursiveRef(expr.cond, names, guarded) ||
+        hasUnguardedRecursiveRef(expr.thenExpr, names, guarded) ||
+        hasUnguardedRecursiveRef(expr.elseExpr, names, guarded);
+    case "Match":
+      return hasUnguardedRecursiveRef(expr.value, names, guarded) ||
+        expr.arms.some((arm) => hasUnguardedRecursiveRef(arm.body, names, guarded));
+    case "Block":
+      return expr.items.some((item) =>
+        isExpr(item) && hasUnguardedRecursiveRef(item, names, guarded)
+      ) ||
+        hasUnguardedRecursiveRef(expr.result, names, guarded);
+    case "Binary":
+      return hasUnguardedRecursiveRef(expr.left, names, guarded) ||
+        hasUnguardedRecursiveRef(expr.right, names, guarded);
+    case "Unary":
+      return hasUnguardedRecursiveRef(expr.value, names, guarded);
+    default:
+      return false;
+  }
+}
+
+export function warnRedundantMatchArms(
+  patterns: Pattern[],
+  valueType: Ty,
+  typeEnv: TypeEnv,
+  adts: Map<number, TypeDeclInfo>,
+  warnings: string[],
+) {
+  for (let i = 1; i < patterns.length; i++) {
+    const previous = patterns.slice(0, i).map((pattern) => [pattern]);
+    if (isVectorExhaustive(previous, [valueType], typeEnv, adts)) {
+      warnings.push(`redundant match arm: ${showPattern(patterns[i])}`);
+    }
+  }
+}
+
+function isExpr(value: Expr | Decl): value is Expr {
+  return value.kind !== "ImportDecl" && value.kind !== "LetDecl" && value.kind !== "TypeDecl" &&
+    value.kind !== "RecordDecl";
+}

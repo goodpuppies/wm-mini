@@ -1,5 +1,6 @@
-import { assertRejects } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { checkFile } from "../src/compiler.ts";
+import { loadModuleGraph } from "../src/module_graph.ts";
 import { expectBinding } from "./type_helpers.ts";
 
 Deno.test("imported type constructors and constructors remain available through namespace", async () => {
@@ -42,7 +43,7 @@ Deno.test("named import allows a type and constructor to share one local spellin
 
 Deno.test("type imports reject collisions with existing local type declarations", async () => {
   const dir = await Deno.makeTempDir();
-  await Deno.writeTextFile(`${dir}/lib.wm`, "export type Box<T> = Box<T>;");
+  await Deno.writeTextFile(`${dir}/lib.wm`, "export type Box<T> = T;");
   await Deno.writeTextFile(
     `${dir}/main.wm`,
     `
@@ -69,4 +70,74 @@ Deno.test("value imports reject collisions with imported constructors", async ()
   );
 
   await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "duplicate value import Ctor");
+});
+
+Deno.test("module graph exposes ordered nodes and import edges", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/base.wm`, "export let value = 1;");
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    'from "./base.wm" import * as Base; let x = Base.value;',
+  );
+
+  const graph = await loadModuleGraph(`${dir}/main.wm`);
+  const basePath = await Deno.realPath(`${dir}/base.wm`);
+  const mainPath = await Deno.realPath(`${dir}/main.wm`);
+
+  assertEquals(graph.entry, mainPath);
+  assertEquals(graph.order, [basePath, mainPath]);
+  assertEquals(graph.nodes.get(basePath)?.emitName, "Base");
+  assertEquals(graph.nodes.get(basePath)?.source, "export let value = 1;");
+  assertEquals(graph.nodes.get(mainPath)?.imports.map((edge) => edge.path), [basePath]);
+});
+
+Deno.test("file elaboration exposes SML-like structure environments", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(
+    `${dir}/lib.wm`,
+    "let hidden = 1; export type Box<T> = | Box<T>; export let shown = Box(hidden);",
+  );
+  await Deno.writeTextFile(`${dir}/main.wm`, 'from "./lib.wm" import * as Lib; let x = Lib.shown;');
+
+  const results = await checkFile(`${dir}/main.wm`);
+  const lib = results.get(await Deno.realPath(`${dir}/lib.wm`));
+  if (!lib) throw new Error("missing lib result");
+
+  assertEquals(lib.structure.values.has("hidden"), true);
+  assertEquals(lib.exportedStructure.values.has("hidden"), false);
+  assertEquals(lib.exportedStructure.values.has("shown"), true);
+  assertEquals(lib.exportedStructure.types.has("Box"), true);
+  assertEquals(lib.exportedStructure.adts.size, 1);
+});
+
+Deno.test("exported structure rejects values and aliases that expose private types", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(
+    `${dir}/bad_value.wm`,
+    "type Hidden = | Hidden; export let leak = Hidden;",
+  );
+  await Deno.writeTextFile(
+    `${dir}/bad_alias.wm`,
+    "type Hidden = | Hidden; export type Alias = Hidden;",
+  );
+  await Deno.writeTextFile(
+    `${dir}/bad_datatype.wm`,
+    "type Hidden = | Hidden; export type Public = | Public<Hidden>;",
+  );
+
+  await assertRejects(
+    () => checkFile(`${dir}/bad_value.wm`),
+    Error,
+    "exported value leak mentions non-exported type",
+  );
+  await assertRejects(
+    () => checkFile(`${dir}/bad_alias.wm`),
+    Error,
+    "exported type Alias mentions non-exported type",
+  );
+  await assertRejects(
+    () => checkFile(`${dir}/bad_datatype.wm`),
+    Error,
+    "exported type Public mentions non-exported type",
+  );
 });

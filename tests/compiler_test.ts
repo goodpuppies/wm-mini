@@ -273,28 +273,6 @@ Deno.test("same-spelled datatypes from different files are nominally distinct", 
   await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "type mismatch");
 });
 
-Deno.test("generalizes recursive function bindings after solving", async () => {
-  await checkSource('let rec id = (x) => { x }; let a = id(1); let b = id("s");');
-});
-
-Deno.test("allows recursive non-function bindings as general recursion", async () => {
-  await checkSource("let rec value = 1;");
-  await checkSource("let rec x = x;");
-});
-
-Deno.test("checks annotations on recursive function bindings", async () => {
-  await checkSource(`
-    let rec id: (t) => t = (x) => { x };
-    let a = id(1);
-    let b = id("s");
-  `);
-  await assertRejects(
-    () => checkSource("let rec bad: (Number) => String = (x) => { x };"),
-    Error,
-    "type mismatch",
-  );
-});
-
 Deno.test("rejects duplicate pattern binders", async () => {
   await assertRejects(
     () => checkSource("let bad = ((x, x)) => { x };"),

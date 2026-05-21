@@ -48,6 +48,42 @@ Deno.test("type constructor arity is checked for datatypes and aliases", async (
   );
 });
 
+Deno.test("type declarations reject unbound type variables in their right hand sides", async () => {
+  await assertRejects(
+    () => checkSource("type Bad<T> = Missing;"),
+    Error,
+    "unknown type Missing",
+  );
+  await assertRejects(
+    () => checkSource("type Bad<T> = unknown;"),
+    Error,
+    "unbound type variable unknown",
+  );
+  await assertRejects(
+    () => checkSource("type Bad<T> = | Bad<unknown>;"),
+    Error,
+    "unbound type variable unknown",
+  );
+  await assertRejects(
+    () => checkSource("record Bad<T> = { value: unknown };"),
+    Error,
+    "unbound type variable unknown",
+  );
+});
+
+Deno.test("type aliases reject direct cycles", async () => {
+  await assertRejects(
+    () => checkSource("type Bad<T> = Bad<T>;"),
+    Error,
+    "cyclic type alias Bad",
+  );
+  await assertRejects(
+    () => checkSource("type Bad<T> = (T, Bad<T>);"),
+    Error,
+    "cyclic type alias Bad",
+  );
+});
+
 Deno.test("type alias parameter substitution preserves sharing", async () => {
   const result = await checkSource(`
     type Pair<T> = (T, T);

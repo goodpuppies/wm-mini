@@ -156,3 +156,16 @@ Deno.test("record declarations reject duplicate fields", async () => {
     "duplicate record field x",
   );
 });
+
+Deno.test("record patterns reject duplicate fields", async () => {
+  await assertRejects(
+    () =>
+      checkSource(`
+        record Point = { x: Number };
+        let p = .{ x = 1 };
+        let .{ x = a, x = b } = p;
+      `),
+    Error,
+    "duplicate record field x",
+  );
+});

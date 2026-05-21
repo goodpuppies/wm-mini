@@ -1,16 +1,20 @@
-export type Module = { kind: "Module"; decls: Decl[] };
+import type { AstNode } from "./source.ts";
+
+export type Located<T> = T & { node?: AstNode };
+
+export type Module = Located<{ kind: "Module"; decls: Decl[] }>;
 
 export type Decl =
-  | { kind: "ImportDecl"; path: string; clause: ImportClause }
-  | { kind: "LetDecl"; exported: boolean; recursive: boolean; bindings: Binding[] }
-  | {
+  | Located<{ kind: "ImportDecl"; path: string; clause: ImportClause }>
+  | Located<{ kind: "LetDecl"; exported: boolean; recursive: boolean; bindings: Binding[] }>
+  | Located<{
     kind: "RecordDecl";
     exported: boolean;
     name: string;
     params: string[];
     fields: RecordFieldDecl[];
-  }
-  | {
+  }>
+  | Located<{
     kind: "TypeDecl";
     exported: boolean;
     name: string;
@@ -18,52 +22,52 @@ export type Decl =
     ctors: CtorDecl[];
     alias?: TypeExpr;
     hasLeadingPipe?: boolean;
-  };
+  }>;
 
 export type ImportClause =
-  | { kind: "Namespace"; alias: string }
-  | { kind: "Named"; specs: ImportSpec[] };
-export type ImportSpec = { name: string; alias?: string };
-export type Binding = { pattern: Pattern; annotation?: TypeExpr; value: Expr };
-export type CtorDecl = { name: string; args: TypeExpr[] };
-export type RecordFieldDecl = { name: string; type: TypeExpr };
-export type Param = { pattern: Pattern; annotation?: TypeExpr };
+  | Located<{ kind: "Namespace"; alias: string }>
+  | Located<{ kind: "Named"; specs: ImportSpec[] }>;
+export type ImportSpec = Located<{ name: string; alias?: string }>;
+export type Binding = Located<{ pattern: Pattern; annotation?: TypeExpr; value: Expr }>;
+export type CtorDecl = Located<{ name: string; args: TypeExpr[] }>;
+export type RecordFieldDecl = Located<{ name: string; type: TypeExpr }>;
+export type Param = Located<{ pattern: Pattern; annotation?: TypeExpr }>;
 
 export type Expr =
-  | { kind: "Int"; value: number }
-  | { kind: "Float"; value: number }
-  | { kind: "String"; value: string }
-  | { kind: "Bool"; value: boolean }
-  | { kind: "Void" }
-  | { kind: "Var"; name: string }
-  | { kind: "Tuple"; items: Expr[] }
-  | { kind: "Record"; fields: RecordExprField[] }
-  | { kind: "Lambda"; params: Param[]; body: Expr }
-  | { kind: "Call"; callee: Expr; args: Expr[] }
-  | { kind: "If"; cond: Expr; thenExpr: Expr; elseExpr: Expr }
-  | { kind: "Match"; value: Expr; arms: MatchArm[] }
-  | { kind: "Block"; items: (Decl | Expr)[]; result: Expr }
-  | { kind: "Binary"; op: string; left: Expr; right: Expr }
-  | { kind: "Unary"; op: string; value: Expr };
+  | Located<{ kind: "Int"; value: number }>
+  | Located<{ kind: "Float"; value: number }>
+  | Located<{ kind: "String"; value: string }>
+  | Located<{ kind: "Bool"; value: boolean }>
+  | Located<{ kind: "Void" }>
+  | Located<{ kind: "Var"; name: string }>
+  | Located<{ kind: "Tuple"; items: Expr[] }>
+  | Located<{ kind: "Record"; fields: RecordExprField[] }>
+  | Located<{ kind: "Lambda"; params: Param[]; body: Expr }>
+  | Located<{ kind: "Call"; callee: Expr; args: Expr[] }>
+  | Located<{ kind: "If"; cond: Expr; thenExpr: Expr; elseExpr: Expr }>
+  | Located<{ kind: "Match"; value: Expr; arms: MatchArm[] }>
+  | Located<{ kind: "Block"; items: (Decl | Expr)[]; result: Expr }>
+  | Located<{ kind: "Binary"; op: string; left: Expr; right: Expr }>
+  | Located<{ kind: "Unary"; op: string; value: Expr }>;
 
-export type RecordExprField = { name: string; value: Expr };
-export type MatchArm = { pattern: Pattern; body: Expr };
+export type RecordExprField = Located<{ name: string; value: Expr }>;
+export type MatchArm = Located<{ pattern: Pattern; body: Expr }>;
 
 export type Pattern =
-  | { kind: "PWildcard" }
-  | { kind: "PVar"; name: string }
-  | { kind: "PInt"; value: number }
-  | { kind: "PString"; value: string }
-  | { kind: "PBool"; value: boolean }
-  | { kind: "PVoid" }
-  | { kind: "PPinned"; name: string }
-  | { kind: "PTuple"; items: Pattern[] }
-  | { kind: "PRecord"; fields: RecordPatternField[] }
-  | { kind: "PCtor"; name: string; args: Pattern[] };
+  | Located<{ kind: "PWildcard" }>
+  | Located<{ kind: "PVar"; name: string }>
+  | Located<{ kind: "PInt"; value: number }>
+  | Located<{ kind: "PString"; value: string }>
+  | Located<{ kind: "PBool"; value: boolean }>
+  | Located<{ kind: "PVoid" }>
+  | Located<{ kind: "PPinned"; name: string }>
+  | Located<{ kind: "PTuple"; items: Pattern[] }>
+  | Located<{ kind: "PRecord"; fields: RecordPatternField[] }>
+  | Located<{ kind: "PCtor"; name: string; args: Pattern[] }>;
 
-export type RecordPatternField = { name: string; pattern: Pattern };
+export type RecordPatternField = Located<{ name: string; pattern: Pattern }>;
 export type TypeExpr =
-  | { kind: "TName"; name: string; args: TypeExpr[] }
-  | { kind: "TVar"; name: string }
-  | { kind: "TTuple"; items: TypeExpr[] }
-  | { kind: "TFn"; params: TypeExpr[]; result: TypeExpr };
+  | Located<{ kind: "TName"; name: string; args: TypeExpr[] }>
+  | Located<{ kind: "TVar"; name: string }>
+  | Located<{ kind: "TTuple"; items: TypeExpr[] }>
+  | Located<{ kind: "TFn"; params: TypeExpr[]; result: TypeExpr }>;

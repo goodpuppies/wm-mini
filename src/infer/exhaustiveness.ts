@@ -13,21 +13,23 @@ export function checkExhaustive(
   valueType: Ty,
   typeEnv: TypeEnv,
   adts: Map<number, TypeDeclInfo>,
-) {
-  if (isVectorExhaustive(patterns.map((pattern) => [pattern]), [valueType], typeEnv, adts)) return;
+): string | undefined {
+  if (isVectorExhaustive(patterns.map((pattern) => [pattern]), [valueType], typeEnv, adts)) {
+    return undefined;
+  }
   const scrutinee = prune(valueType);
   if (scrutinee.tag === "named") {
     const info = adts.get(scrutinee.id);
-    if (!info) throw new Error("non-exhaustive match: unknown sum type");
+    if (!info) return "non-exhaustive match";
     const covered = new Set(
       patterns
         .filter((p): p is Extract<Pattern, { kind: "PCtor" }> => p.kind === "PCtor")
         .map((p) => baseName(p.name)),
     );
     const missing = info.ctors.map((c) => c.name).filter((name) => !covered.has(name));
-    if (missing.length) throw new Error(`non-exhaustive match: missing ${missing.join(", ")}`);
+    if (missing.length) return `non-exhaustive match: missing ${missing.join(", ")}`;
   }
-  throw new Error("non-exhaustive match");
+  return "non-exhaustive match";
 }
 
 export function isVectorExhaustive(

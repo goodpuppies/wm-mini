@@ -35,36 +35,32 @@ Deno.test("explicit binder patterns are exhaustive", async () => {
   `);
 });
 
-Deno.test("requires exhaustive matches for closed sums", async () => {
-  await assertRejects(
-    () =>
-      checkSource("type Option<T> = None | Some<T>; let bad = match(opt) => { None => { 0 } };"),
-    Error,
-    "missing Some",
+Deno.test("warns for non-exhaustive matches over closed sums", async () => {
+  const result = await checkSource(
+    "type Option<T> = None | Some<T>; let bad = match(opt) => { None => { 0 } };",
   );
+  assertStringIncludes(result.warnings.join("\n"), "missing Some");
 });
 
-Deno.test("rejects partial constructor argument coverage in closed sums", async () => {
-  await assertRejects(
-    () =>
-      checkSource(
-        "type Option<T> = None | Some<T>; let opt = Some(true); let bad = match(opt) => { Some(true) => { 1 }, None => { 0 } };",
-      ),
-    Error,
-    "non-exhaustive match",
+Deno.test("warns for partial constructor argument coverage in closed sums", async () => {
+  const result = await checkSource(
+    "type Option<T> = None | Some<T>; let opt = Some(true); let bad = match(opt) => { Some(true) => { 1 }, None => { 0 } };",
   );
+  assertStringIncludes(result.warnings.join("\n"), "non-exhaustive match");
 });
 
 Deno.test("accepts exhaustive boolean matches without wildcard", async () => {
   await checkSource("let flag = true; let ok = match(flag) => { true => { 1 }, false => { 0 } };");
 });
 
-Deno.test("still rejects non-exhaustive non-sum matches", async () => {
-  await assertRejects(
-    () => checkSource("let n = 0; let bad = match(n) => { 0 => { 1 } };"),
-    Error,
-    "non-exhaustive match",
-  );
+Deno.test("warns for non-exhaustive non-sum matches", async () => {
+  const result = await checkSource("let n = 0; let bad = match(n) => { 0 => { 1 } };");
+  assertStringIncludes(result.warnings.join("\n"), "non-exhaustive match");
+});
+
+Deno.test("warns for basic redundant match arms", async () => {
+  const result = await checkSource("let bad = match(x) => { _ => { 1 }, 0 => { 2 } };");
+  assertStringIncludes(result.warnings.join("\n"), "redundant match arm: 0");
 });
 
 Deno.test("supports constructor and literal let patterns", async () => {

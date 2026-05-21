@@ -88,6 +88,7 @@ export function inferPattern(
       return expected;
     }
     case "PRecord": {
+      rejectDuplicateFields(p.fields.map((field) => field.name));
       const record = recordPatternTarget(expected, p.fields.map((field) => field.name), typeEnv);
       constrain(expected, record.type);
       const fields = instantiateRecordFields(record.info, record.type.args);
@@ -155,6 +156,7 @@ export function inferBindingPattern(
       return;
     }
     case "PRecord": {
+      rejectDuplicateFields(pattern.fields.map((field) => field.name));
       const record = recordPatternTarget(
         expected,
         pattern.fields.map((field) => field.name),
@@ -239,4 +241,12 @@ function findRecordTypes(typeEnv: TypeEnv, names: string[]): TypeInfo[] {
     const fields = info.recordFields.map((field) => field.name);
     return names.every((name) => fields.includes(name));
   });
+}
+
+function rejectDuplicateFields(names: string[]) {
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (seen.has(name)) throw new Error(`duplicate record field ${name}`);
+    seen.add(name);
+  }
 }

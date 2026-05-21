@@ -31,8 +31,8 @@ Core frontend target:
   and explicit `Var(name)` binders
 - Hindley-Milner inference with principal types for the supported subset
 - correct generalization/instantiation boundaries
-- recursive binding inference for Workman `let rec` as a general recursion marker (not limited to
-  function-only forms)
+- recursive binding inference for Workman `let rec` as a general recursion marker, while rejecting
+  unguarded recursive value uses that would require lazy value semantics
 - duplicate binder and duplicate declaration checks matching SML-style syntactic restrictions
 - nominal datatype identity using fresh type names, not string equality
 - long value identifiers and long type constructors
@@ -108,6 +108,12 @@ Non-overlap for Goal 1:
 - SML equality-type discipline (`''a`) is out of scope; polymorphic `==`/`!=` are accepted in Goal
   1.
 - SML flexible record inference is out of scope; Workman records are nominal in Goal 1.
+- SML value restriction machinery is out of scope while refs, exceptions, and mutation are out of
+  scope.
+- Duplicate type declarations in one visible scope are rejected instead of using SML-style
+  shadowing-by-modification.
+- Non-exhaustive and redundant matches are frontend warnings, following SML's report style rather
+  than hard static failures.
 - Workman infection types, flow, traits, raw mode, and other advanced Workman-only features are out
   of scope.
 
@@ -150,6 +156,22 @@ Required test categories:
 
 Prefer frontend-only tests through a `checkFile`/`checkSource` style API. Backend tests may exist
 only as smoke tests.
+
+## Source Spans And Elaboration Facts
+
+Follow the `workmangr` source model:
+
+- every concrete AST node should have a stable `node` payload with `{ id, span }`
+- spans use 1-based `line`, 0-based `col`, and absolute `start`/`end` offsets
+- lowering should preserve node ids/spans where a source construct survives into the shared core
+- synthetic nodes created by desugaring should either reuse the source span that caused them or be
+  marked as synthetic once the diagnostics model needs that distinction
+- type inference should record facts by node id: principal binding schemes, instantiated expression
+  types, scoped binding references, and diagnostic origins
+- diagnostics and future LSP features should resolve node ids back through a `nodeId -> span` index
+
+This keeps parser recovery, type errors, hover/type-at-position, and formal verification hooks tied
+to the same elaboration surface instead of separate ad hoc locations.
 
 ## Codebase Constraints
 

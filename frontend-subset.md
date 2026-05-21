@@ -72,6 +72,8 @@ Important Workman differences from SML:
 - `Var(name)` introduces a match binder
 - type application is `Type<T>`, not SML postfix syntax
 - files are the module/structure boundary
+- `let rec` marks recursive groups, but recursive value uses must be guarded by functions; wm-mini
+  does not provide lazy recursive values
 
 ## wmsml Verification Surface
 
@@ -99,7 +101,7 @@ The supported subset aims for:
 - Hindley-Milner inference with principal types
 - explicit generalization and instantiation boundaries
 - simultaneous `and` groups
-- recursive groups solved before generalization
+- recursive groups solved before generalization, with recursive value uses guarded by functions
 - nominal datatype identity using fresh type ids
 - transparent type aliases
 - constructor arity checks
@@ -109,14 +111,15 @@ The supported subset aims for:
 - deterministic import cycle rejection
 - basic list literals and patterns backed by a regular algebraic list model
 - basic nominal records with declaration, construction, field access, and pattern support
+- non-exhaustive and redundant matches reported as warnings
 
 The current Goal 1 subset intentionally omits:
 
 - refs and mutation
-- value restriction
 - equality types
 - numeric overloading
 - SML flexible record inference
+- SML value restriction machinery; refs, exceptions, and mutation are outside this subset
 - advanced record ergonomics such as spread and flexible record updates
 - custom operators, fixity declarations, and pipe syntax
 - holes and panic expressions
@@ -124,6 +127,13 @@ The current Goal 1 subset intentionally omits:
 - signatures, functors, sharing, `open`
 - full Basis library
 - Workman infection, flow, traits, raw/FFI, and backend profiles
+
+Other intentional differences from SML:
+
+- nominal Workman records replace SML flexible records
+- duplicate type declarations in one visible scope are rejected instead of shadowing by type name
+- `let rec` is a wm-mini recursion marker, not SML `val rec`, but eager recursive values are still
+  rejected
 
 ## Verification Style
 
@@ -133,7 +143,13 @@ Tests should increasingly assert elaboration facts, not just pass/fail:
 - environment snapshot after each declaration
 - constructor/type availability after datatype declarations
 - module import environments
+- source node ids and spans for parsed/elaborated constructs
+- most-general and scoped instantiated types keyed by source node id
 - exact negative diagnostics where practical
 
 Use `checkSourceSteps` when the question is “what does the frontend know after this declaration?”
 Use `checkSource` or `checkFile` when the final module environment is enough.
+
+Source spans follow the `workmangr` convention: each AST node carries `{ id, span }`, where spans
+store 1-based line, 0-based column, and absolute source offsets. Inference and diagnostics should
+point at node ids first, then resolve those ids to spans for CLI/LSP presentation.

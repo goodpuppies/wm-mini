@@ -184,7 +184,9 @@ export function typeFromAst(
   expr: TypeExpr,
   typeEnv: TypeEnv,
   vars: TypeVarScope = new Map(),
+  options: { allowFreeVars?: boolean } = {},
 ): Ty {
+  const allowFreeVars = options.allowFreeVars ?? true;
   const instantiateAlias = (template: Ty, params: number[], args: Ty[]): Ty => {
     const subst = new Map<number, Ty>();
     params.forEach((id, i) => subst.set(id, args[i]));
@@ -194,15 +196,18 @@ export function typeFromAst(
   if (expr.kind === "TVar") {
     const existing = vars.get(expr.name);
     if (existing) return existing;
+    if (!allowFreeVars) throw new Error(`unbound type variable ${expr.name}`);
     const created = fresh(expr.name);
     vars.set(expr.name, created);
     return created;
   }
-  if (expr.kind === "TTuple") return tuple(expr.items.map((x) => typeFromAst(x, typeEnv, vars)));
+  if (expr.kind === "TTuple") {
+    return tuple(expr.items.map((x) => typeFromAst(x, typeEnv, vars, options)));
+  }
   if (expr.kind === "TFn") {
     return fn(
-      [callArg(expr.params.map((x) => typeFromAst(x, typeEnv, vars)))],
-      typeFromAst(expr.result, typeEnv, vars),
+      [callArg(expr.params.map((x) => typeFromAst(x, typeEnv, vars, options)))],
+      typeFromAst(expr.result, typeEnv, vars, options),
     );
   }
   if (expr.args.length === 0 && vars.has(expr.name)) return vars.get(expr.name)!;
@@ -212,13 +217,13 @@ export function typeFromAst(
     throw new Error(`${expr.name} expects ${info.arity} type arguments`);
   }
   if (info.alias) {
-    const args = expr.args.map((x) => typeFromAst(x, typeEnv, vars));
+    const args = expr.args.map((x) => typeFromAst(x, typeEnv, vars, options));
     return instantiateAlias(info.alias, info.aliasParams ?? [], args);
   }
   if (expr.args.length === 0 && ["Number", "Bool", "String", "Void"].includes(expr.name)) {
     return prim(expr.name);
   }
-  return named(info, expr.args.map((x) => typeFromAst(x, typeEnv, vars)));
+  return named(info, expr.args.map((x) => typeFromAst(x, typeEnv, vars, options)));
 }
 
 export function show(t: Ty): string {

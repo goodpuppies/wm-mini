@@ -25,15 +25,34 @@ import {
 } from "./types.ts";
 import { checkExhaustive, isVectorExhaustive, mentionsLocalType } from "./infer/exhaustiveness.ts";
 import {
+  hasUnguardedRecursiveRef,
+  referencesTypeName,
+  warnRedundantMatchArms,
+} from "./infer/decl_helpers.ts";
+import {
   inferBindingPattern,
   inferPattern,
   patternBinders,
   showPattern,
 } from "./infer/patterns.ts";
+import {
+  addExportableTypes,
+  assertExportableRecord,
+  assertExportableType,
+  exportedAdts,
+} from "./infer/module_exports.ts";
 import { inferDottedVar, inferRecordExpr } from "./infer/records.ts";
 import { callArg, constrain } from "./infer/shared.ts";
 
+export type StructureEnv = {
+  values: Env;
+  types: TypeEnv;
+  adts: Map<number, TypeDeclInfo>;
+};
+
 export type InferResult = {
+  structure: StructureEnv;
+  exportedStructure: StructureEnv;
   env: Env;
   exports: Env;
   typeEnv: TypeEnv;
@@ -59,6 +78,7 @@ export function inferModuleWithSteps(
   const typeEnv = baseTypeEnv();
   const typeExports: TypeEnv = new Map();
   const adts = new Map<number, TypeDeclInfo>();
+  const exportableTypeIds = new Set([...typeEnv.values()].map((info) => info.id));
   const types = new Map<Expr, Ty>();
   const warnings: string[] = [];
   const steps: InferStep[] = [];
@@ -67,13 +87,33 @@ export function inferModuleWithSteps(
       const imported = imports.get(decl.path);
       if (!imported) throw new Error(`unknown import ${decl.path}`);
       addImport(env, typeEnv, decl.clause, imported);
-      addAdts(adts, imported.adts);
+      addAdts(adts, imported.exportedStructure.adts);
+      addExportableTypes(exportableTypeIds, imported.exportedStructure.types);
       continue;
     }
-    inferDecl(decl, env, exports, typeEnv, typeExports, adts, types, warnings);
+    inferDecl(decl, env, exports, typeEnv, typeExports, adts, types, warnings, exportableTypeIds);
     steps.push({ declIndex, env: snapshotEnv(env) });
   }
-  return { result: { env, exports, typeEnv, typeExports, types, adts, warnings }, steps };
+  const structure: StructureEnv = { values: env, types: typeEnv, adts };
+  const exportedStructure: StructureEnv = {
+    values: exports,
+    types: typeExports,
+    adts: exportedAdts(adts, typeExports),
+  };
+  return {
+    result: {
+      structure,
+      exportedStructure,
+      env,
+      exports,
+      typeEnv,
+      typeExports,
+      types,
+      adts,
+      warnings,
+    },
+    steps,
+  };
 }
 
 function isDecl(value: Decl | Expr): value is Decl {
@@ -83,16 +123,16 @@ function isDecl(value: Decl | Expr): value is Decl {
 
 function addImport(env: Env, typeEnv: TypeEnv, clause: ImportClause, imported: InferResult) {
   if (clause.kind === "Namespace") {
-    addQualifiedImport(env, clause.alias, imported.exports);
-    addQualifiedTypes(typeEnv, clause.alias, imported.typeExports);
+    addQualifiedImport(env, clause.alias, imported.exportedStructure.values);
+    addQualifiedTypes(typeEnv, clause.alias, imported.exportedStructure.types);
     return;
   }
   const values = new Set<string>();
   const types = new Set<string>();
   for (const spec of clause.specs) {
     const local = spec.alias ?? spec.name;
-    const value = imported.exports.get(spec.name);
-    const type = imported.typeExports.get(spec.name);
+    const value = imported.exportedStructure.values.get(spec.name);
+    const type = imported.exportedStructure.types.get(spec.name);
     if (!value && !type) throw new Error(`unknown import ${spec.name}`);
     if (value) {
       if (values.has(local) || env.has(local)) throw new Error(`duplicate value import ${local}`);
@@ -136,6 +176,7 @@ function inferDecl(
   adts: Map<number, TypeDeclInfo>,
   types: Map<Expr, Ty>,
   warnings: string[],
+  exportableTypeIds: Set<number>,
 ) {
   if (decl.kind === "ImportDecl") return;
   if (decl.kind === "RecordDecl") {
@@ -148,13 +189,17 @@ function inferDecl(
     const vars = new Map(decl.params.map((p) => [p, fresh(p)] as const));
     info.recordFields = decl.fields.map((field) => ({
       name: field.name,
-      type: typeFromAst(field.type, typeEnv, vars),
+      type: typeFromAst(field.type, typeEnv, vars, { allowFreeVars: false }),
     }));
     info.recordParams = decl.params.map((p) => {
       const v = prune(vars.get(p)!);
       if (v.tag !== "var") throw new Error("invalid record type parameter");
       return v.id;
     });
+    if (decl.exported) {
+      exportableTypeIds.add(info.id);
+      assertExportableRecord(info, exportableTypeIds);
+    }
     return;
   }
   if (decl.kind === "TypeDecl") {
@@ -164,21 +209,34 @@ function inferDecl(
     typeEnv.set(decl.name, info);
     if (decl.exported) typeExports.set(decl.name, info);
     if (decl.alias) {
+      if (referencesTypeName(decl.alias, decl.name, new Set(decl.params))) {
+        throw new Error(`cyclic type alias ${decl.name}`);
+      }
       const vars = new Map(decl.params.map((p) => [p, fresh(p)] as const));
-      info.alias = typeFromAst(decl.alias, typeEnv, vars);
+      info.alias = typeFromAst(decl.alias, typeEnv, vars, { allowFreeVars: false });
       info.aliasParams = decl.params.map((p) => {
         const v = prune(vars.get(p)!);
         if (v.tag !== "var") throw new Error("invalid type alias parameter");
         return v.id;
       });
+      if (decl.exported) {
+        exportableTypeIds.add(info.id);
+        assertExportableType(info.alias, exportableTypeIds, `exported type ${decl.name}`);
+      }
       return;
     }
     rejectDuplicates(decl.ctors.map((c) => c.name), "constructor");
     adts.set(info.id, { ...decl, type: info });
     const vars = new Map(decl.params.map((p) => [p, fresh(p)] as const));
     const result = named(info, decl.params.map((p) => vars.get(p)!));
+    if (decl.exported) exportableTypeIds.add(info.id);
     for (const c of decl.ctors) {
-      const args = c.args.map((x) => typeFromAst(x, typeEnv, vars));
+      const args = c.args.map((x) => typeFromAst(x, typeEnv, vars, { allowFreeVars: false }));
+      if (decl.exported) {
+        args.forEach((arg) =>
+          assertExportableType(arg, exportableTypeIds, `exported type ${decl.name}`)
+        );
+      }
       const t = args.length === 0 ? result : fn([callArg(args)], result);
       const scheme = generalize(env, t);
       env.set(c.name, scheme);
@@ -189,7 +247,9 @@ function inferDecl(
   rejectDuplicates(decl.bindings.flatMap((b) => patternBinders(b.pattern)), "binding");
   if (!decl.recursive) {
     const base = new Map(env);
-    const inferred = decl.bindings.map((b) => inferBinding(b, base, typeEnv, adts, types));
+    const inferred = decl.bindings.map((b) =>
+      inferBinding(b, base, typeEnv, adts, types, warnings)
+    );
     inferred.forEach((result, i) => {
       if (result.refutable) {
         warnings.push(
@@ -199,7 +259,10 @@ function inferDecl(
       for (const [name, type] of result.bound) {
         const scheme = generalize(base, type);
         env.set(name, scheme);
-        if (decl.exported) exports.set(name, scheme);
+        if (decl.exported) {
+          assertExportableType(scheme.type, exportableTypeIds, `exported value ${name}`);
+          exports.set(name, scheme);
+        }
       }
     });
     return;
@@ -208,19 +271,28 @@ function inferDecl(
   for (const b of decl.bindings) {
     if (b.pattern.kind !== "PVar") throw new Error("recursive bindings must bind one name");
   }
+  const recursiveNames = new Set(decl.bindings.map((b) => (b.pattern as { name: string }).name));
+  for (const b of decl.bindings) {
+    if (hasUnguardedRecursiveRef(b.value, recursiveNames)) {
+      throw new Error("recursive references must be guarded by a function");
+    }
+  }
   const placeholders = decl.bindings.map(() => fresh());
   decl.bindings.forEach((b, i) =>
     env.set((b.pattern as { name: string }).name, { vars: [], type: placeholders[i] })
   );
   decl.bindings.forEach((b, i) => {
-    constrain(placeholders[i], inferExpr(b.value, env, typeEnv, adts, types));
+    constrain(placeholders[i], inferExpr(b.value, env, typeEnv, adts, types, warnings));
     if (b.annotation) constrain(placeholders[i], typeFromAst(b.annotation, typeEnv));
   });
   decl.bindings.forEach((b, i) => {
     const scheme = generalize(base, placeholders[i]);
     const name = (b.pattern as { name: string }).name;
     env.set(name, scheme);
-    if (decl.exported) exports.set(name, scheme);
+    if (decl.exported) {
+      assertExportableType(scheme.type, exportableTypeIds, `exported value ${name}`);
+      exports.set(name, scheme);
+    }
   });
 }
 
@@ -238,16 +310,17 @@ function inferBinding(
   typeEnv: TypeEnv,
   adts: Map<number, TypeDeclInfo>,
   types: Map<Expr, Ty>,
+  warnings: string[],
 ): { bound: Map<string, Ty>; refutable: boolean } {
   const annotated = b.annotation ? typeFromAst(b.annotation, typeEnv) : undefined;
   const t = annotated && b.value.kind === "Record"
     ? inferRecordExpr(
       b.value,
       typeEnv,
-      (value) => inferExpr(value, env, typeEnv, adts, types),
+      (value) => inferExpr(value, env, typeEnv, adts, types, warnings),
       annotated,
     )
-    : inferExpr(b.value, env, typeEnv, adts, types);
+    : inferExpr(b.value, env, typeEnv, adts, types, warnings);
   if (annotated) constrain(t, annotated);
   const bound = new Map<string, Ty>();
   inferBindingPattern(b.pattern, t, env, typeEnv, bound);
@@ -330,7 +403,10 @@ function inferExpr(
         inferPattern(arm.pattern, valueType, local, typeEnv, adts);
         constrain(t, inferExpr(arm.body, local, typeEnv, adts, types, warnings));
       }
-      checkExhaustive(expr.arms.map((arm) => arm.pattern), valueType, typeEnv, adts);
+      const armPatterns = expr.arms.map((arm) => arm.pattern);
+      warnRedundantMatchArms(armPatterns, valueType, typeEnv, adts, warnings);
+      const exhaustiveWarning = checkExhaustive(armPatterns, valueType, typeEnv, adts);
+      if (exhaustiveWarning) warnings.push(exhaustiveWarning);
       break;
     }
     case "Block": {
@@ -339,7 +415,17 @@ function inferExpr(
       const outerTypeIds = new Set([...typeEnv.values()].map((info) => info.id));
       expr.items.forEach((s) =>
         isDecl(s)
-          ? inferDecl(s, local, new Map(), localTypes, new Map(), adts, types, warnings)
+          ? inferDecl(
+            s,
+            local,
+            new Map(),
+            localTypes,
+            new Map(),
+            adts,
+            types,
+            warnings,
+            new Set([...localTypes.values()].map((info) => info.id)),
+          )
           : inferExpr(s, local, localTypes, adts, types, warnings)
       );
       t = inferExpr(expr.result, local, localTypes, adts, types, warnings);
