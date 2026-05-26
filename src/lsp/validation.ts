@@ -1,5 +1,5 @@
 import { normalize, resolve } from "node:path";
-import { analyzeFile } from "../compiler.ts";
+import { analyzeFile, ModuleAnalysisError } from "../compiler.ts";
 import {
   classifyDiagnostic,
   errorMessage,
@@ -38,6 +38,15 @@ export async function validateUri(
       ),
     }));
   } catch (error) {
+    if (error instanceof ModuleAnalysisError) {
+      const entryUri = pathToFileUri(canonicalPath(entryPath, sourceOverrides));
+      const diagnosticUri = pathToFileUri(error.path);
+      const result = {
+        uri: diagnosticUri,
+        diagnostics: [errorDiagnostic(error.originalError, error.source)],
+      };
+      return diagnosticUri === entryUri ? [result] : [{ uri: entryUri, diagnostics: [] }, result];
+    }
     const canonical = canonicalPath(entryPath, sourceOverrides);
     return [{
       uri: pathToFileUri(canonical),

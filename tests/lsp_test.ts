@@ -54,6 +54,20 @@ Deno.test("lsp validation uses unsaved imported modules", async () => {
   assertEquals(await diagnosticsForPath(results, main), []);
 });
 
+Deno.test("lsp validation reports imported module errors on the imported file", async () => {
+  const dir = await Deno.makeTempDir();
+  const lib = `${dir}/lib.wm`;
+  const main = `${dir}/main.wm`;
+  await Deno.writeTextFile(lib, "export let value = 1 + true;");
+  await Deno.writeTextFile(main, 'from "./lib.wm" import * as Lib; let x = Lib.value;');
+
+  const results = await validateUri(pathToFileUri(main), new Map());
+  assertEquals(await diagnosticsForPath(results, main), []);
+  const libDiagnostics = await diagnosticsForPath(results, lib);
+  assertEquals(libDiagnostics?.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
+  assertEquals(libDiagnostics?.[0].range.start, { line: 0, character: 19 });
+});
+
 Deno.test("lsp server publishes diagnostics for didOpen", async () => {
   const dir = await Deno.makeTempDir();
   const main = `${dir}/main.wm`;
@@ -90,6 +104,46 @@ Deno.test("lsp server publishes diagnostics for didOpen", async () => {
   assertEquals(params?.diagnostics.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
 });
 
+Deno.test("lsp server publishes closed imported file diagnostics", async () => {
+  const dir = await Deno.makeTempDir();
+  const lib = `${dir}/lib.wm`;
+  const main = `${dir}/main.wm`;
+  await Deno.writeTextFile(lib, "export let value = 1 + true;");
+  await Deno.writeTextFile(main, 'from "./lib.wm" import * as Lib; let x = Lib.value;');
+  const uri = pathToFileUri(main);
+  const libUri = pathToFileUri(lib);
+  const messages = await runLsp([
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+    {
+      jsonrpc: "2.0",
+      method: "textDocument/didOpen",
+      params: {
+        textDocument: {
+          uri,
+          languageId: "wm",
+          version: 1,
+          text: await Deno.readTextFile(main),
+        },
+      },
+    },
+    { jsonrpc: "2.0", id: 2, method: "shutdown", params: null },
+    { jsonrpc: "2.0", method: "exit", params: null },
+  ]);
+
+  const publishes = messages.filter((message) =>
+    message.method === "textDocument/publishDiagnostics"
+  );
+  const mainPublish = publishes.find((message) => (message.params as { uri: string }).uri === uri);
+  const libPublish = publishes.find((message) =>
+    (message.params as { uri: string }).uri === libUri
+  );
+  assertEquals((mainPublish?.params as { diagnostics: unknown[] }).diagnostics, []);
+  assertEquals(
+    (libPublish?.params as { diagnostics: { code: string }[] }).diagnostics.map((d) => d.code),
+    ["type.mismatch"],
+  );
+});
+
 Deno.test("lsp server clears diagnostics after didChange", async () => {
   const dir = await Deno.makeTempDir();
   const main = `${dir}/main.wm`;
@@ -118,8 +172,16 @@ Deno.test("lsp server clears diagnostics after didChange", async () => {
   const publishes = messages.filter((message) =>
     message.method === "textDocument/publishDiagnostics"
   );
-  const first = publishes[0].params as { diagnostics: { code: string }[] };
-  const second = publishes[1].params as { diagnostics: { code: string }[] };
+  const mainPublishes = publishes.filter((message) =>
+    (message.params as { uri: string }).uri === uri
+  );
+  assertEquals(
+    mainPublishes.length,
+    2,
+    JSON.stringify(publishes.map((message) => message.params), null, 2),
+  );
+  const first = mainPublishes[0].params as { diagnostics: { code: string }[] };
+  const second = mainPublishes[1].params as { diagnostics: { code: string }[] };
   assertEquals(first.diagnostics.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
   assertEquals(second.diagnostics, []);
 });
@@ -146,13 +208,17 @@ Deno.test("lsp server revalidates open files after imported file changes", async
       },
     },
     async () => {
-      await delay(100);
+      await delay(300);
       await Deno.writeTextFile(lib, 'export let value = "ok";');
+      await delay(100);
     },
     {
       jsonrpc: "2.0",
       method: "workspace/didChangeWatchedFiles",
       params: { changes: [{ uri: pathToFileUri(lib), type: 2 }] },
+    },
+    async () => {
+      await delay(100);
     },
     { jsonrpc: "2.0", id: 2, method: "shutdown", params: null },
     { jsonrpc: "2.0", method: "exit", params: null },
@@ -161,8 +227,16 @@ Deno.test("lsp server revalidates open files after imported file changes", async
   const publishes = messages.filter((message) =>
     message.method === "textDocument/publishDiagnostics"
   );
-  const first = publishes[0].params as { diagnostics: { code: string }[] };
-  const second = publishes[1].params as { diagnostics: { code: string }[] };
+  const mainPublishes = publishes.filter((message) =>
+    (message.params as { uri: string }).uri === uri
+  );
+  assertEquals(
+    mainPublishes.length,
+    2,
+    JSON.stringify(publishes.map((message) => message.params), null, 2),
+  );
+  const first = mainPublishes[0].params as { diagnostics: { code: string }[] };
+  const second = mainPublishes[1].params as { diagnostics: { code: string }[] };
   assertEquals(first.diagnostics.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
   assertEquals(second.diagnostics, []);
 });

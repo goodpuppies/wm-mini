@@ -14,6 +14,20 @@ export async function compile(source: string, options: CompileOptions = {}): Pro
 
 export type CheckSourceOptions = { surface?: Surface };
 
+export class ModuleAnalysisError extends Error {
+  path: string;
+  source: string;
+  originalError: unknown;
+
+  constructor(path: string, source: string, originalError: unknown) {
+    super(originalError instanceof Error ? originalError.message : String(originalError));
+    this.name = "ModuleAnalysisError";
+    this.path = path;
+    this.source = source;
+    this.originalError = originalError;
+  }
+}
+
 export async function checkSource(
   source: string,
   options: CheckSourceOptions = {},
@@ -61,7 +75,11 @@ export async function analyzeFile(
     for (const edge of node.imports) {
       imports.set(edge.specifier, results.get(edge.path)!);
     }
-    results.set(path, inferModule(node.module, imports));
+    try {
+      results.set(path, inferModule(node.module, imports));
+    } catch (error) {
+      throw new ModuleAnalysisError(path, node.source, error);
+    }
   }
   return { graph, results };
 }
