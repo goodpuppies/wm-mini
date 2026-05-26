@@ -1,0 +1,59 @@
+type List<T> = Nil | Cons<T, List<T>>;
+
+let sample =
+  Cons(199,
+  Cons(200,
+  Cons(208,
+  Cons(210,
+  Cons(200,
+  Cons(207,
+  Cons(240,
+  Cons(269,
+  Cons(260,
+  Cons(263, Nil))))))))));
+
+let rec length = match(xs) => {
+  Nil => { 0 },
+  Cons(_, rest) => { 1 + length(rest) },
+};
+
+let rec sum = match(xs) => {
+  Nil => { 0 },
+  Cons(value, rest) => { value + sum(rest) },
+};
+
+let rec count_increases = match(xs) => {
+  Nil => { 0 },
+  Cons(_head, Nil) => { 0 },
+  Cons(prev, Cons(next, rest)) => {
+    if (next > prev) {
+      1 + count_increases(Cons(next, rest))
+    } else {
+      count_increases(Cons(next, rest))
+    }
+  },
+};
+
+let rec count_window_increases = match(xs) => {
+  Nil => { 0 },
+  Cons(_a, Nil) => { 0 },
+  Cons(_a, Cons(_b, Nil)) => { 0 },
+  Cons(_a, Cons(_b, Cons(_c, Nil))) => { 0 },
+  Cons(a, Cons(b, Cons(c, Cons(d, rest)))) => {
+    let previous = a + b + c;
+    let next = b + c + d;
+    if (next > previous) {
+      1 + count_window_increases(Cons(b, Cons(c, Cons(d, rest))))
+    } else {
+      count_window_increases(Cons(b, Cons(c, Cons(d, rest))))
+    }
+  },
+};
+
+let main = () => {
+  print(length(sample));
+  print(sum(sample));
+  print(count_increases(sample));
+  print(count_window_increases(sample));
+  void
+};

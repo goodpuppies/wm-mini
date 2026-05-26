@@ -1,0 +1,13 @@
+{
+  "iconDefinitions": {
+    "_wm": {
+      "iconPath": "./workman.svg"
+    }
+  },
+  "fileExtensions": {
+    "wm": "_wm"
+  },
+  "languageIds": {
+    "wm": "_wm"
+  }
+}

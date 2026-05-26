@@ -1,7 +1,7 @@
 {
   "tasks": {
-    "check": "deno check src/main.ts tests/*.ts",
-    "test": "deno test --allow-read --allow-write tests",
+    "check": "deno check src/main.ts src/lsp/server.ts tests/*.ts",
+    "test": "deno test --allow-read --allow-write --allow-run tests",
     "compile": "deno run --allow-read --allow-write src/main.ts"
   },
   "imports": {

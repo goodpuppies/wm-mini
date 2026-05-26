@@ -1,4 +1,5 @@
 import type { Decl, Expr, Pattern, TypeExpr } from "../ast.ts";
+import { type FrontendDiagnostic, warningDiagnostic } from "../diagnostics.ts";
 import type { Ty, TypeDeclInfo, TypeEnv } from "../types.ts";
 import { isVectorExhaustive } from "./exhaustiveness.ts";
 import { showPattern } from "./patterns.ts";
@@ -16,6 +17,14 @@ export function referencesTypeName(expr: TypeExpr, name: string, vars: Set<strin
       referencesTypeName(expr.result, name, vars);
   }
   return false;
+}
+
+export function rejectDuplicates(names: string[], kind: string) {
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (seen.has(name)) throw new Error(`duplicate ${kind} ${name}`);
+    seen.add(name);
+  }
 }
 
 export function hasUnguardedRecursiveRef(
@@ -60,11 +69,14 @@ export function warnRedundantMatchArms(
   typeEnv: TypeEnv,
   adts: Map<number, TypeDeclInfo>,
   warnings: string[],
+  diagnostics: FrontendDiagnostic[] = [],
 ) {
   for (let i = 1; i < patterns.length; i++) {
     const previous = patterns.slice(0, i).map((pattern) => [pattern]);
     if (isVectorExhaustive(previous, [valueType], typeEnv, adts)) {
-      warnings.push(`redundant match arm: ${showPattern(patterns[i])}`);
+      const message = `redundant match arm: ${showPattern(patterns[i])}`;
+      warnings.push(message);
+      diagnostics.push(warningDiagnostic(message, patterns[i].node, "pattern.redundant-arm"));
     }
   }
 }

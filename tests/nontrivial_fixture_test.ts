@@ -41,6 +41,30 @@ Deno.test("typechecks AoC-style depth analysis fixture", async () => {
   });
 });
 
+Deno.test("typechecks AoC-style example program", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../examples/aoc_depths.wm", import.meta.url),
+  );
+  const result = await checkSource(source);
+
+  expectBinding(result.env, "sampleWindowIncreaseCount", {
+    type: "Number",
+    vars: 0,
+  });
+});
+
+Deno.test("typechecks explicit-cons AoC day 1 example", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../examples/aoc2021_day1.wm", import.meta.url),
+  );
+  const result = await checkSource(source);
+
+  expectBinding(result.env, "count_window_increases", {
+    type: "(List<Number>) => Number",
+    vars: 0,
+  });
+});
+
 Deno.test("typechecks wmsml overlap for polymorphic list helpers", async () => {
   const result = await checkSource(
     `

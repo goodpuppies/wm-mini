@@ -1,4 +1,5 @@
-import type { Binding, Decl, Expr, ImportClause, Module, Param } from "./ast.ts";
+import type { Binding, Decl, Expr, Module, Param } from "./ast.ts";
+import { diagnosticError, type FrontendDiagnostic, warningDiagnostic } from "./diagnostics.ts";
 import {
   baseEnv,
   baseTypeEnv,
@@ -13,7 +14,6 @@ import {
   NumberTy,
   prune,
   Scheme,
-  show,
   StringTy,
   tuple,
   Ty,
@@ -27,8 +27,10 @@ import { checkExhaustive, isVectorExhaustive, mentionsLocalType } from "./infer/
 import {
   hasUnguardedRecursiveRef,
   referencesTypeName,
+  rejectDuplicates,
   warnRedundantMatchArms,
 } from "./infer/decl_helpers.ts";
+import { addAdts, addImport } from "./infer/imports.ts";
 import {
   inferBindingPattern,
   inferPattern,
@@ -42,13 +44,10 @@ import {
   exportedAdts,
 } from "./infer/module_exports.ts";
 import { inferDottedVar, inferRecordExpr } from "./infer/records.ts";
+import { snapshotEnv, type TypeSnapshot } from "./infer/snapshots.ts";
 import { callArg, constrain } from "./infer/shared.ts";
 
-export type StructureEnv = {
-  values: Env;
-  types: TypeEnv;
-  adts: Map<number, TypeDeclInfo>;
-};
+export type StructureEnv = { values: Env; types: TypeEnv; adts: Map<number, TypeDeclInfo> };
 
 export type InferResult = {
   structure: StructureEnv;
@@ -60,9 +59,10 @@ export type InferResult = {
   types: Map<Expr, Ty>;
   adts: Map<number, TypeDeclInfo>;
   warnings: string[];
+  diagnostics: FrontendDiagnostic[];
 };
 
-export type TypeSnapshot = { type: string; vars: number };
+export { describeEnv, type TypeSnapshot } from "./infer/snapshots.ts";
 export type InferStep = { declIndex: number; env: Map<string, TypeSnapshot> };
 
 export function inferModule(module: Module, imports = new Map<string, InferResult>()): InferResult {
@@ -81,17 +81,37 @@ export function inferModuleWithSteps(
   const exportableTypeIds = new Set([...typeEnv.values()].map((info) => info.id));
   const types = new Map<Expr, Ty>();
   const warnings: string[] = [];
+  const diagnostics: FrontendDiagnostic[] = [];
   const steps: InferStep[] = [];
   for (const [declIndex, decl] of module.decls.entries()) {
     if (decl.kind === "ImportDecl") {
-      const imported = imports.get(decl.path);
-      if (!imported) throw new Error(`unknown import ${decl.path}`);
-      addImport(env, typeEnv, decl.clause, imported);
-      addAdts(adts, imported.exportedStructure.adts);
-      addExportableTypes(exportableTypeIds, imported.exportedStructure.types);
+      try {
+        const imported = imports.get(decl.path);
+        if (!imported) throw new Error(`unknown import ${decl.path}`);
+        addImport(env, typeEnv, decl.clause, imported);
+        addAdts(adts, imported.exportedStructure.adts);
+        addExportableTypes(exportableTypeIds, imported.exportedStructure.types);
+      } catch (error) {
+        throw diagnosticError(error, decl.node);
+      }
       continue;
     }
-    inferDecl(decl, env, exports, typeEnv, typeExports, adts, types, warnings, exportableTypeIds);
+    try {
+      inferDecl(
+        decl,
+        env,
+        exports,
+        typeEnv,
+        typeExports,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        exportableTypeIds,
+      );
+    } catch (error) {
+      throw diagnosticError(error, decl.node);
+    }
     steps.push({ declIndex, env: snapshotEnv(env) });
   }
   const structure: StructureEnv = { values: env, types: typeEnv, adts };
@@ -111,6 +131,7 @@ export function inferModuleWithSteps(
       types,
       adts,
       warnings,
+      diagnostics,
     },
     steps,
   };
@@ -119,52 +140,6 @@ export function inferModuleWithSteps(
 function isDecl(value: Decl | Expr): value is Decl {
   return value.kind === "ImportDecl" || value.kind === "LetDecl" ||
     value.kind === "TypeDecl" || value.kind === "RecordDecl";
-}
-
-function addImport(env: Env, typeEnv: TypeEnv, clause: ImportClause, imported: InferResult) {
-  if (clause.kind === "Namespace") {
-    addQualifiedImport(env, clause.alias, imported.exportedStructure.values);
-    addQualifiedTypes(typeEnv, clause.alias, imported.exportedStructure.types);
-    return;
-  }
-  const values = new Set<string>();
-  const types = new Set<string>();
-  for (const spec of clause.specs) {
-    const local = spec.alias ?? spec.name;
-    const value = imported.exportedStructure.values.get(spec.name);
-    const type = imported.exportedStructure.types.get(spec.name);
-    if (!value && !type) throw new Error(`unknown import ${spec.name}`);
-    if (value) {
-      if (values.has(local) || env.has(local)) throw new Error(`duplicate value import ${local}`);
-      values.add(local);
-      env.set(local, value);
-    }
-    if (type) {
-      if (types.has(local) || typeEnv.has(local)) throw new Error(`duplicate type import ${local}`);
-      types.add(local);
-      typeEnv.set(local, type);
-    }
-  }
-}
-
-function addQualifiedImport(env: Env, alias: string, imported: Env) {
-  for (const [name, scheme] of imported) {
-    const local = `${alias}.${name}`;
-    if (env.has(local)) throw new Error(`duplicate value import ${local}`);
-    env.set(local, scheme);
-  }
-}
-
-function addQualifiedTypes(typeEnv: TypeEnv, alias: string, imported: TypeEnv) {
-  for (const [name, info] of imported) {
-    const local = `${alias}.${name}`;
-    if (typeEnv.has(local)) throw new Error(`duplicate type import ${local}`);
-    typeEnv.set(local, info);
-  }
-}
-
-function addAdts(adts: Map<number, TypeDeclInfo>, imported: Map<number, TypeDeclInfo>) {
-  for (const [id, info] of imported) adts.set(id, info);
 }
 
 function inferDecl(
@@ -176,6 +151,7 @@ function inferDecl(
   adts: Map<number, TypeDeclInfo>,
   types: Map<Expr, Ty>,
   warnings: string[],
+  diagnostics: FrontendDiagnostic[],
   exportableTypeIds: Set<number>,
 ) {
   if (decl.kind === "ImportDecl") return;
@@ -256,12 +232,16 @@ function inferDecl(
   if (!decl.recursive) {
     const base = new Map(env);
     const inferred = decl.bindings.map((b) =>
-      inferBinding(b, base, typeEnv, adts, types, warnings, annotationVars)
+      inferBinding(b, base, typeEnv, adts, types, warnings, diagnostics, annotationVars)
     );
     inferred.forEach((result, i) => {
       if (result.refutable) {
-        warnings.push(
-          `refutable let pattern may fail at runtime: ${showPattern(decl.bindings[i].pattern)}`,
+        const message = `refutable let pattern may fail at runtime: ${
+          showPattern(decl.bindings[i].pattern)
+        }`;
+        warnings.push(message);
+        diagnostics.push(
+          warningDiagnostic(message, decl.bindings[i].pattern.node, "pattern.refutable-let"),
         );
       }
       for (const [name, type] of result.bound) {
@@ -290,7 +270,10 @@ function inferDecl(
     env.set((b.pattern as { name: string }).name, { vars: [], type: placeholders[i] })
   );
   decl.bindings.forEach((b, i) => {
-    constrain(placeholders[i], inferExpr(b.value, env, typeEnv, adts, types, warnings));
+    constrain(
+      placeholders[i],
+      inferExpr(b.value, env, typeEnv, adts, types, warnings, diagnostics),
+    );
     if (b.annotation) {
       constrain(placeholders[i], typeFromAst(b.annotation, typeEnv, annotationVars));
     }
@@ -306,14 +289,6 @@ function inferDecl(
   });
 }
 
-function rejectDuplicates(names: string[], kind: string) {
-  const seen = new Set<string>();
-  for (const name of names) {
-    if (seen.has(name)) throw new Error(`duplicate ${kind} ${name}`);
-    seen.add(name);
-  }
-}
-
 function inferBinding(
   b: Binding,
   env: Env,
@@ -321,22 +296,27 @@ function inferBinding(
   adts: Map<number, TypeDeclInfo>,
   types: Map<Expr, Ty>,
   warnings: string[],
+  diagnostics: FrontendDiagnostic[],
   annotationVars: TypeVarScope,
 ): { bound: Map<string, Ty>; refutable: boolean } {
-  const annotated = b.annotation ? typeFromAst(b.annotation, typeEnv, annotationVars) : undefined;
-  const t = annotated && b.value.kind === "Record"
-    ? inferRecordExpr(
-      b.value,
-      typeEnv,
-      (value) => inferExpr(value, env, typeEnv, adts, types, warnings),
-      annotated,
-    )
-    : inferExpr(b.value, env, typeEnv, adts, types, warnings);
-  if (annotated) constrain(t, annotated);
-  const bound = new Map<string, Ty>();
-  inferBindingPattern(b.pattern, t, env, typeEnv, bound);
-  const refutable = !isVectorExhaustive([[b.pattern]], [t], typeEnv, adts);
-  return { bound, refutable };
+  try {
+    const annotated = b.annotation ? typeFromAst(b.annotation, typeEnv, annotationVars) : undefined;
+    const t = annotated && b.value.kind === "Record"
+      ? inferRecordExpr(
+        b.value,
+        typeEnv,
+        (value) => inferExpr(value, env, typeEnv, adts, types, warnings, diagnostics),
+        annotated,
+      )
+      : inferExpr(b.value, env, typeEnv, adts, types, warnings, diagnostics);
+    if (annotated) constrain(t, annotated);
+    const bound = new Map<string, Ty>();
+    inferBindingPattern(b.pattern, t, env, typeEnv, bound);
+    const refutable = !isVectorExhaustive([[b.pattern]], [t], typeEnv, adts);
+    return { bound, refutable };
+  } catch (error) {
+    throw diagnosticError(error, b.node);
+  }
 }
 
 function inferExpr(
@@ -346,6 +326,23 @@ function inferExpr(
   adts: Map<number, TypeDeclInfo>,
   types: Map<Expr, Ty>,
   warnings: string[] = [],
+  diagnostics: FrontendDiagnostic[] = [],
+): Ty {
+  try {
+    return inferExprInner(expr, env, typeEnv, adts, types, warnings, diagnostics);
+  } catch (error) {
+    throw diagnosticError(error, expr.node);
+  }
+}
+
+function inferExprInner(
+  expr: Expr,
+  env: Env,
+  typeEnv: TypeEnv,
+  adts: Map<number, TypeDeclInfo>,
+  types: Map<Expr, Ty>,
+  warnings: string[] = [],
+  diagnostics: FrontendDiagnostic[] = [],
 ): Ty {
   let t: Ty;
   switch (expr.kind) {
@@ -372,13 +369,15 @@ function inferExpr(
       break;
     }
     case "Tuple":
-      t = tuple(expr.items.map((x) => inferExpr(x, env, typeEnv, adts, types, warnings)));
+      t = tuple(
+        expr.items.map((x) => inferExpr(x, env, typeEnv, adts, types, warnings, diagnostics)),
+      );
       break;
     case "Record":
       t = inferRecordExpr(
         expr,
         typeEnv,
-        (value) => inferExpr(value, env, typeEnv, adts, types, warnings),
+        (value) => inferExpr(value, env, typeEnv, adts, types, warnings, diagnostics),
       );
       break;
     case "Lambda": {
@@ -388,36 +387,44 @@ function inferExpr(
       const params = expr.params.map((p) =>
         inferParam(p, local, typeEnv, adts, annotationVars, binders)
       );
-      t = fn([callArg(params)], inferExpr(expr.body, local, typeEnv, adts, types, warnings));
+      t = fn(
+        [callArg(params)],
+        inferExpr(expr.body, local, typeEnv, adts, types, warnings, diagnostics),
+      );
       break;
     }
     case "Call": {
       const result = fresh();
-      const arg = callArg(expr.args.map((a) => inferExpr(a, env, typeEnv, adts, types, warnings)));
+      const arg = callArg(
+        expr.args.map((a) => inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics)),
+      );
       constrain(
-        inferExpr(expr.callee, env, typeEnv, adts, types, warnings),
+        inferExpr(expr.callee, env, typeEnv, adts, types, warnings, diagnostics),
         fn([arg], result),
       );
       t = result;
       break;
     }
     case "If":
-      constrain(inferExpr(expr.cond, env, typeEnv, adts, types, warnings), BoolTy);
-      t = inferExpr(expr.thenExpr, env, typeEnv, adts, types, warnings);
-      constrain(t, inferExpr(expr.elseExpr, env, typeEnv, adts, types, warnings));
+      constrain(inferExpr(expr.cond, env, typeEnv, adts, types, warnings, diagnostics), BoolTy);
+      t = inferExpr(expr.thenExpr, env, typeEnv, adts, types, warnings, diagnostics);
+      constrain(t, inferExpr(expr.elseExpr, env, typeEnv, adts, types, warnings, diagnostics));
       break;
     case "Match": {
-      const valueType = inferExpr(expr.value, env, typeEnv, adts, types, warnings);
+      const valueType = inferExpr(expr.value, env, typeEnv, adts, types, warnings, diagnostics);
       t = fresh();
       for (const arm of expr.arms) {
         const local = new Map(env);
         inferPattern(arm.pattern, valueType, local, typeEnv, adts);
-        constrain(t, inferExpr(arm.body, local, typeEnv, adts, types, warnings));
+        constrain(t, inferExpr(arm.body, local, typeEnv, adts, types, warnings, diagnostics));
       }
       const armPatterns = expr.arms.map((arm) => arm.pattern);
-      warnRedundantMatchArms(armPatterns, valueType, typeEnv, adts, warnings);
+      warnRedundantMatchArms(armPatterns, valueType, typeEnv, adts, warnings, diagnostics);
       const exhaustiveWarning = checkExhaustive(armPatterns, valueType, typeEnv, adts);
-      if (exhaustiveWarning) warnings.push(exhaustiveWarning);
+      if (exhaustiveWarning) {
+        warnings.push(exhaustiveWarning);
+        diagnostics.push(warningDiagnostic(exhaustiveWarning, expr.node, "pattern.non-exhaustive"));
+      }
       break;
     }
     case "Block": {
@@ -435,11 +442,12 @@ function inferExpr(
             adts,
             types,
             warnings,
+            diagnostics,
             new Set([...localTypes.values()].map((info) => info.id)),
           )
-          : inferExpr(s, local, localTypes, adts, types, warnings)
+          : inferExpr(s, local, localTypes, adts, types, warnings, diagnostics)
       );
-      t = inferExpr(expr.result, local, localTypes, adts, types, warnings);
+      t = inferExpr(expr.result, local, localTypes, adts, types, warnings, diagnostics);
       if (mentionsLocalType(t, outerTypeIds)) throw new Error("local type escapes scope");
       break;
     }
@@ -451,8 +459,8 @@ function inferExpr(
         instantiate(op),
         fn(
           [tuple([
-            inferExpr(expr.left, env, typeEnv, adts, types, warnings),
-            inferExpr(expr.right, env, typeEnv, adts, types, warnings),
+            inferExpr(expr.left, env, typeEnv, adts, types, warnings, diagnostics),
+            inferExpr(expr.right, env, typeEnv, adts, types, warnings, diagnostics),
           ])],
           result,
         ),
@@ -462,10 +470,13 @@ function inferExpr(
     }
     case "Unary":
       if (expr.op === "-") {
-        constrain(inferExpr(expr.value, env, typeEnv, adts, types, warnings), NumberTy);
+        constrain(
+          inferExpr(expr.value, env, typeEnv, adts, types, warnings, diagnostics),
+          NumberTy,
+        );
         t = NumberTy;
       } else {
-        constrain(inferExpr(expr.value, env, typeEnv, adts, types, warnings), BoolTy);
+        constrain(inferExpr(expr.value, env, typeEnv, adts, types, warnings, diagnostics), BoolTy);
         t = BoolTy;
       }
       break;
@@ -484,17 +495,4 @@ function inferParam(
 ): Ty {
   const expected = param.annotation ? typeFromAst(param.annotation, typeEnv, vars) : fresh();
   return inferPattern(param.pattern, expected, env, typeEnv, adts, binders);
-}
-
-export function describeEnv(env: Env): string {
-  return [...env.entries()].map(([name, scheme]) => `${name}: ${show(scheme.type)}`).join("\n");
-}
-
-function snapshotEnv(env: Env): Map<string, TypeSnapshot> {
-  return new Map(
-    [...env.entries()].map(([name, scheme]) => [
-      name,
-      { type: show(scheme.type), vars: scheme.vars.length },
-    ]),
-  );
 }

@@ -62,6 +62,10 @@ Deno.test("warns for non-exhaustive non-sum matches", async () => {
 Deno.test("warns for basic redundant match arms", async () => {
   const result = await checkSource("let bad = match(x) => { _ => { 1 }, 0 => { 2 } };");
   assertStringIncludes(result.warnings.join("\n"), "redundant match arm: 0");
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    "pattern.redundant-arm",
+  ]);
+  assertEquals(result.diagnostics[0].span?.start, 36);
 });
 
 Deno.test("supports constructor and literal let patterns", async () => {
@@ -79,6 +83,9 @@ Deno.test("warns when let pattern may fail at runtime", async () => {
   assertEquals(result.warnings.length, 1);
   assertStringIncludes(result.warnings[0], "refutable let pattern may fail at runtime");
   assertStringIncludes(result.warnings[0], "Some(x)");
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    "pattern.refutable-let",
+  ]);
 });
 
 Deno.test("does not warn for irrefutable let patterns", async () => {

@@ -1,0 +1,110 @@
+import * as fs from "fs";
+import * as path from "path";
+import { commands, type ExtensionContext, window, workspace } from "vscode";
+import {
+  LanguageClient,
+  type LanguageClientOptions,
+  type ServerOptions,
+  TransportKind,
+} from "vscode-languageclient/node";
+import { Trace } from "vscode-jsonrpc";
+
+let client: LanguageClient | undefined;
+
+export async function activate(context: ExtensionContext) {
+  const outputChannel = window.createOutputChannel("wm-mini Language Server");
+  context.subscriptions.push(outputChannel);
+
+  const start = async () => {
+    const serverPath = resolveServerPath(context);
+    if (!serverPath) {
+      const message =
+        "wm-mini language server not found. Set wmMini.serverPath to your wm-mini src/lsp/server.ts checkout.";
+      outputChannel.appendLine(message);
+      window.showErrorMessage(message);
+      return;
+    }
+
+    const denoPath = workspace.getConfiguration("wmMini").get<string>("denoPath") || "deno";
+    outputChannel.appendLine(`Starting wm-mini language server: ${serverPath}`);
+    const serverOptions: ServerOptions = {
+      run: denoServer(denoPath, serverPath),
+      debug: denoServer(denoPath, serverPath),
+    };
+    const clientOptions: LanguageClientOptions = {
+      documentSelector: [{ scheme: "file", language: "wm" }],
+      synchronize: {
+        fileEvents: workspace.createFileSystemWatcher("**/*.wm"),
+      },
+      outputChannel,
+      traceOutputChannel: outputChannel,
+    };
+
+    client = new LanguageClient(
+      "wm-mini",
+      "wm-mini",
+      serverOptions,
+      clientOptions,
+    );
+    context.subscriptions.push(client);
+    await client.start();
+    await client.setTrace(traceSetting());
+  };
+
+  context.subscriptions.push(
+    commands.registerCommand("wm-mini.restartLanguageServer", async () => {
+      outputChannel.appendLine("Restarting wm-mini language server...");
+      if (client) {
+        await client.stop();
+        client = undefined;
+      }
+      await start();
+    }),
+  );
+
+  await start();
+}
+
+export async function deactivate(): Promise<void> {
+  await client?.stop();
+}
+
+function denoServer(command: string, serverPath: string) {
+  return {
+    command,
+    args: ["run", "--allow-read", serverPath],
+    transport: TransportKind.stdio,
+    options: { cwd: path.dirname(path.dirname(path.dirname(serverPath))) },
+  };
+}
+
+function resolveServerPath(context: ExtensionContext): string | undefined {
+  const configured = workspace.getConfiguration("wmMini").get<string>(
+    "serverPath",
+  )?.trim();
+  const candidates = [
+    configured ? resolveConfiguredPath(configured) : undefined,
+    ...workspace.workspaceFolders?.map((folder) =>
+      path.join(folder.uri.fsPath, "src", "lsp", "server.ts")
+    ) ?? [],
+    path.resolve(context.extensionPath, "..", "..", "src", "lsp", "server.ts"),
+  ];
+  return candidates.find((candidate): candidate is string =>
+    !!candidate && fs.existsSync(candidate)
+  );
+}
+
+function resolveConfiguredPath(configured: string): string {
+  if (path.isAbsolute(configured)) return configured;
+  const folder = workspace.workspaceFolders?.[0]?.uri.fsPath;
+  return folder ? path.resolve(folder, configured) : path.resolve(configured);
+}
+
+function traceSetting(): Trace {
+  const value = workspace.getConfiguration("wmMini").get<string>(
+    "trace.server",
+  );
+  if (value === "verbose") return Trace.Verbose;
+  if (value === "messages") return Trace.Messages;
+  return Trace.Off;
+}

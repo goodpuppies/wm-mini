@@ -1,0 +1,104 @@
+{
+  "name": "wm-mini-language",
+  "displayName": "wm-mini",
+  "description": "Language support for wm-mini",
+  "version": "0.0.1",
+  "publisher": "wm-mini",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "workman",
+    "wm-mini",
+    "sml",
+    "ml",
+    "functional"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:wm"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "wm-mini.restartLanguageServer",
+        "title": "wm-mini: Restart Language Server"
+      }
+    ],
+    "languages": [
+      {
+        "id": "wm",
+        "aliases": [
+          "wm-mini",
+          "Workman"
+        ],
+        "extensions": [
+          ".wm"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./workman.svg",
+          "dark": "./workman.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "wm",
+        "scopeName": "source.wm-mini",
+        "path": "./syntaxes/wm.tmLanguage.json"
+      }
+    ],
+    "iconThemes": [
+      {
+        "id": "wm-mini-icons",
+        "label": "wm-mini Icons",
+        "path": "./workman-icon-theme.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "wm-mini",
+      "properties": {
+        "wmMini.serverPath": {
+          "scope": "window",
+          "type": "string",
+          "default": "",
+          "description": "Absolute path, or workspace-relative path, to wm-mini src/lsp/server.ts. Empty means auto-detect from the current workspace or this extension checkout."
+        },
+        "wmMini.denoPath": {
+          "scope": "window",
+          "type": "string",
+          "default": "deno",
+          "description": "Deno executable used to launch the wm-mini language server."
+        },
+        "wmMini.trace.server": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces communication between VS Code and the wm-mini language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -39,7 +39,7 @@ export async function loadModuleGraph(
   input: string,
   options: ModuleGraphOptions = {},
 ): Promise<ModuleGraph> {
-  const entry = await Deno.realPath(normalizeInputPath(input));
+  const entry = await resolveEntryPath(input, options);
   const ctx: LoadContext = {
     options,
     visiting: new Set(),
@@ -79,7 +79,9 @@ async function visitModule(path: string, ctx: LoadContext) {
 }
 
 async function readModuleSource(path: string, options: ModuleGraphOptions): Promise<string> {
-  return options.sourceOverrides?.get(path) ?? await Deno.readTextFile(path);
+  return options.sourceOverrides?.get(path) ??
+    options.sourceOverrides?.get(normalizeInputPath(path)) ??
+    await Deno.readTextFile(path);
 }
 
 function importEmitName(path: string, clause: ImportClause): string {
@@ -93,6 +95,16 @@ function normalizeInputPath(input: string): string {
     return decodeURIComponent(raw);
   } catch {
     return raw;
+  }
+}
+
+async function resolveEntryPath(input: string, options: ModuleGraphOptions): Promise<string> {
+  const normalized = normalizeInputPath(input);
+  try {
+    return await Deno.realPath(normalized);
+  } catch (error) {
+    if (options.sourceOverrides?.has(normalized)) return normalized;
+    throw error;
   }
 }
 
