@@ -7,6 +7,7 @@ import {
   FrontendDiagnosticError,
 } from "../diagnostics.ts";
 import type { InferResult } from "../infer.ts";
+import { ModuleGraphDiagnosticError } from "../module_graph.ts";
 import { type LspRange, peggyLocationRange, spanRange, startRange } from "./range.ts";
 import { fileUriToPath, pathToFileUri } from "./uri.ts";
 
@@ -47,10 +48,19 @@ export async function validateUri(
       };
       return diagnosticUri === entryUri ? [result] : [{ uri: entryUri, diagnostics: [] }, result];
     }
+    if (error instanceof ModuleGraphDiagnosticError) {
+      const entryUri = pathToFileUri(canonicalPath(entryPath, sourceOverrides));
+      const diagnosticUri = pathToFileUri(error.path);
+      const result = {
+        uri: diagnosticUri,
+        diagnostics: [errorDiagnostic(error.originalError, error.source)],
+      };
+      return diagnosticUri === entryUri ? [result] : [{ uri: entryUri, diagnostics: [] }, result];
+    }
     const canonical = canonicalPath(entryPath, sourceOverrides);
     return [{
       uri: pathToFileUri(canonical),
-      diagnostics: [errorDiagnostic(error, sourceOverrides.get(canonical) ?? "")],
+      diagnostics: [errorDiagnostic(error, await sourceForPath(canonical, sourceOverrides))],
     }];
   }
 }
@@ -95,6 +105,23 @@ function canonicalPath(path: string, sourceOverrides: Map<string, string>): stri
     return Deno.realPathSync(path);
   } catch {
     return sourceOverrides.has(path) ? path : path;
+  }
+}
+
+async function sourceForPath(path: string, sourceOverrides: Map<string, string>): Promise<string> {
+  const override = sourceOverrides.get(path);
+  if (override !== undefined) return override;
+  try {
+    const real = Deno.realPathSync(path);
+    const realOverride = sourceOverrides.get(real);
+    if (realOverride !== undefined) return realOverride;
+  } catch {
+    // Fall through to reading the original path.
+  }
+  try {
+    return await Deno.readTextFile(path);
+  } catch {
+    return "";
   }
 }
 

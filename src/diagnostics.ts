@@ -54,6 +54,10 @@ export function errorMessage(error: unknown): string {
 export function classifyDiagnostic(message: string): string {
   if (message.includes("type mismatch")) return "type.mismatch";
   if (message.includes("unknown import")) return "module.unknown-import";
+  if (message.includes("duplicate value import") || message.includes("duplicate type import")) {
+    return "module.duplicate-import";
+  }
+  if (message.includes("cannot resolve import")) return "module.resolve-import";
   if (message.includes("import cycle")) return "module.import-cycle";
   if (message.includes("Expected") || message.includes("expected")) return "parse.syntax-error";
   return "error";

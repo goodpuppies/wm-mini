@@ -84,7 +84,7 @@ needed for a basic but honest beta.
 
 - [x] Syntax highlighting for supported wm-mini syntax.
 - [x] Parse diagnostics with accurate ranges.
-- [ ] Module/import diagnostics with accurate ranges.
+- [x] Module/import diagnostics with accurate ranges.
 - [x] Type diagnostics with accurate ranges.
 - [x] Exhaustiveness and redundancy warnings with accurate ranges.
 - [x] Diagnostics work on unsaved files.

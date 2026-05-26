@@ -5,7 +5,7 @@ export type Located<T> = T & { node?: AstNode };
 export type Module = Located<{ kind: "Module"; decls: Decl[] }>;
 
 export type Decl =
-  | Located<{ kind: "ImportDecl"; path: string; clause: ImportClause }>
+  | Located<{ kind: "ImportDecl"; path: string; pathNode?: AstNode; clause: ImportClause }>
   | Located<{ kind: "LetDecl"; exported: boolean; recursive: boolean; bindings: Binding[] }>
   | Located<{
     kind: "RecordDecl";

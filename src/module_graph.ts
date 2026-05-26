@@ -1,5 +1,6 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ImportClause, Module } from "./ast.ts";
+import { diagnosticError } from "./diagnostics.ts";
 import { parse, type Surface } from "./parser.ts";
 
 export type ModuleGraphOptions = {
@@ -26,6 +27,20 @@ export type ModuleGraph = {
   order: string[];
   nodes: Map<string, ModuleNode>;
 };
+
+export class ModuleGraphDiagnosticError extends Error {
+  path: string;
+  source: string;
+  originalError: unknown;
+
+  constructor(path: string, source: string, originalError: unknown) {
+    super(originalError instanceof Error ? originalError.message : String(originalError));
+    this.name = "ModuleGraphDiagnosticError";
+    this.path = path;
+    this.source = source;
+    this.originalError = originalError;
+  }
+}
 
 type LoadContext = {
   options: ModuleGraphOptions;
@@ -61,7 +76,31 @@ async function visitModule(path: string, ctx: LoadContext) {
   const imports: ModuleImportEdge[] = [];
   for (const decl of module.decls) {
     if (decl.kind !== "ImportDecl") continue;
-    const child = await resolveImportPath(path, decl.path);
+    let child: string;
+    try {
+      child = await resolveImportPath(path, decl.path);
+    } catch {
+      throw new ModuleGraphDiagnosticError(
+        path,
+        source,
+        diagnosticError(
+          new Error(`cannot resolve import ${decl.path}`),
+          decl.pathNode ?? decl.node,
+          "module.resolve-import",
+        ),
+      );
+    }
+    if (ctx.visiting.has(child)) {
+      throw new ModuleGraphDiagnosticError(
+        path,
+        source,
+        diagnosticError(
+          new Error(`import cycle involving ${child}`),
+          decl.pathNode ?? decl.node,
+          "module.import-cycle",
+        ),
+      );
+    }
     imports.push({ specifier: decl.path, path: child, clause: decl.clause });
     ctx.names.set(child, ctx.names.get(child) ?? importEmitName(child, decl.clause));
     await visitModule(child, ctx);

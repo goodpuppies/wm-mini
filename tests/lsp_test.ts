@@ -68,6 +68,56 @@ Deno.test("lsp validation reports imported module errors on the imported file", 
   assertEquals(libDiagnostics?.[0].range.start, { line: 0, character: 19 });
 });
 
+Deno.test("lsp validation reports unknown named imports on the import specifier", async () => {
+  const dir = await Deno.makeTempDir();
+  const lib = `${dir}/lib.wm`;
+  const main = `${dir}/main.wm`;
+  const source = 'from "./lib.wm" import { missing }; let x = 1;';
+  await Deno.writeTextFile(lib, "export let present = 1;");
+  await Deno.writeTextFile(main, source);
+
+  const diagnostics = await diagnosticsForPath(await validateUri(pathToFileUri(main), new Map()), main);
+  assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["module.unknown-import"]);
+  assertEquals(diagnostics?.[0].range, charRange(source, "missing"));
+});
+
+Deno.test("lsp validation reports duplicate named imports on the duplicate specifier", async () => {
+  const dir = await Deno.makeTempDir();
+  const lib = `${dir}/lib.wm`;
+  const main = `${dir}/main.wm`;
+  const source = 'from "./lib.wm" import { present, present as present }; let x = present;';
+  await Deno.writeTextFile(lib, "export let present = 1;");
+  await Deno.writeTextFile(main, source);
+
+  const diagnostics = await diagnosticsForPath(await validateUri(pathToFileUri(main), new Map()), main);
+  assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["module.duplicate-import"]);
+  assertEquals(diagnostics?.[0].range, charRange(source, "present as present"));
+});
+
+Deno.test("lsp validation reports unresolved import paths on the path literal", async () => {
+  const dir = await Deno.makeTempDir();
+  const main = `${dir}/main.wm`;
+  const source = 'from "./missing.wm" import * as Missing; let x = 1;';
+  await Deno.writeTextFile(main, source);
+
+  const diagnostics = await diagnosticsForPath(await validateUri(pathToFileUri(main), new Map()), main);
+  assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["module.resolve-import"]);
+  assertEquals(diagnostics?.[0].range, charRange(source, '"./missing.wm"'));
+});
+
+Deno.test("lsp validation reports import cycles on the closing import path", async () => {
+  const dir = await Deno.makeTempDir();
+  const a = `${dir}/a.wm`;
+  const b = `${dir}/b.wm`;
+  const source = 'from "./a.wm" import * as A; let y = 2;';
+  await Deno.writeTextFile(a, 'from "./b.wm" import * as B; let x = 1;');
+  await Deno.writeTextFile(b, source);
+
+  const diagnostics = await diagnosticsForPath(await validateUri(pathToFileUri(a), new Map()), b);
+  assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["module.import-cycle"]);
+  assertEquals(diagnostics?.[0].range, charRange(source, '"./a.wm"'));
+});
+
 Deno.test("lsp server publishes diagnostics for didOpen", async () => {
   const dir = await Deno.makeTempDir();
   const main = `${dir}/main.wm`;
@@ -353,6 +403,15 @@ Deno.test("lsp server returns null for hover misses", async () => {
 async function diagnosticsForPath(results: ValidationResult[], path: string) {
   const realPath = await Deno.realPath(path);
   return results.find((result) => fileUriToPath(result.uri) === realPath)?.diagnostics;
+}
+
+function charRange(source: string, text: string) {
+  const start = source.indexOf(text);
+  if (start < 0) throw new Error(`missing test text ${text}`);
+  return {
+    start: { line: 0, character: start },
+    end: { line: 0, character: start + text.length },
+  };
 }
 
 async function runLsp(steps: (RpcMessage | (() => Promise<void>))[]): Promise<RpcMessage[]> {

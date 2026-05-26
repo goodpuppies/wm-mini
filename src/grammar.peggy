@@ -49,7 +49,7 @@ TopDecl = ImportDecl / RecordDecl / TypeDecl / LetDecl
 
 ImportDecl
   = "from" __ path:String __ "import" __ clause:ImportClause _ ";"
-    { return at({ kind: "ImportDecl", path: path.value, clause }, location()); }
+    { return at({ kind: "ImportDecl", path: path.value, pathNode: path.node, clause }, location()); }
 
 ImportClause
   = "*" __ "as" __ alias:Name { return at({ kind: "Namespace", alias }, location()); }
