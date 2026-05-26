@@ -26,6 +26,7 @@
     return { kind: "PVar", name };
   }
   function ctorPattern(name, arg) {
+    if (!constructors.has(name)) throw new Error(`unknown constructor pattern ${name}`);
     return { kind: "PCtor", name, args: arg.kind === "PTuple" ? arg.items : [arg] };
   }
 }
@@ -34,13 +35,27 @@ Start = _ decls:(_ d:TopDecl _ Semi? { return d; })* _ EOF { return mod(decls); 
 
 TopDecl = DatatypeDecl / ValDecl
 
-ValDecl
-  = "val" __ rec:("rec" __)? first:ValBinding rest:(_ "and" __ b:ValBinding { return b; })*
-    { return { kind: "LetDecl", exported: false, recursive: !!rec, bindings: [first, ...rest] }; }
+ValDecl = RecValDecl / PlainValDecl
+
+PlainValDecl
+  = "val" __ first:ValBinding rest:(_ "and" __ b:ValBinding { return b; })*
+    { return { kind: "LetDecl", exported: false, recursive: false, bindings: [first, ...rest] }; }
+
+RecValDecl
+  = "val" __ "rec" __ first:RecValBinding rest:(_ "and" __ b:RecValBinding { return b; })*
+    {
+      const bindings = [first, ...rest];
+      bindings.forEach((binding) => constructors.delete(binding.pattern.name));
+      return { kind: "LetDecl", exported: false, recursive: true, bindings };
+    }
 
 ValBinding
   = pattern:Pattern _ ann:TypeAnn? _ "=" _ value:Expr
     { return { pattern, annotation: ann, value }; }
+
+RecValBinding
+  = name:Name _ ann:TypeAnn? _ "=" _ value:Expr
+    { return { pattern: { kind: "PVar", name }, annotation: ann, value }; }
 
 DatatypeDecl
   = "datatype" __ params:DatatypeParams? name:TyCon _ "=" _ ctors:DatatypeCtorList
