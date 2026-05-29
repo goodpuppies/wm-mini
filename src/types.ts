@@ -1,3 +1,4 @@
+import type { AstNode } from "./source.ts";
 import type { CtorDecl, TypeExpr } from "./ast.ts";
 
 export type Ty =
@@ -8,7 +9,19 @@ export type Ty =
   | { tag: "named"; id: number; name: string; args: Ty[] };
 
 export type Constraint = { kind: "Eq"; left: Ty; right: Ty };
-export type Scheme = { vars: number[]; type: Ty; constraints?: Constraint[] };
+export type IdentifierStatus = "value" | "constructor";
+export type Scheme = {
+  vars: number[];
+  type: Ty;
+  constraints?: Constraint[];
+  status?: IdentifierStatus;
+  provenance?: TypeProvenanceNote[];
+};
+export type TypeProvenanceNote = {
+  message: string;
+  node?: AstNode;
+  span?: AstNode["span"];
+};
 export type Env = Map<string, Scheme>;
 export type TypeEnv = Map<string, TypeInfo>;
 export type RecordFieldInfo = { name: string; type: Ty };
@@ -78,40 +91,51 @@ export function occurs(id: number, t: Ty): boolean {
   return false;
 }
 
-export function unify(a: Ty, b: Ty): void {
+export type UnifyBind = (variable: Extract<Ty, { tag: "var" }>, target: Ty) => void;
+
+export function unify(a: Ty, b: Ty, onBind?: UnifyBind): void {
   a = prune(a);
   b = prune(b);
   if (a === b) return;
   if (a.tag === "var") {
     if (occurs(a.id, b)) throw new Error(`recursive type ${show(a)} ~ ${show(b)}`);
     a.instance = b;
+    onBind?.(a, b);
     return;
   }
-  if (b.tag === "var") return unify(b, a);
-  if (a.tag !== b.tag) throw new Error(`type mismatch ${show(a)} vs ${show(b)}`);
+  if (b.tag === "var") return unify(b, a, onBind);
+  if (a.tag !== b.tag) throw new Error(typeMismatchMessage(a, b));
   if (a.tag === "prim" && b.tag === "prim" && a.name === b.name) return;
   if (a.tag === "fn" && b.tag === "fn" && a.params.length === b.params.length) {
-    a.params.forEach((p, i) => unify(p, b.params[i]));
-    return unify(a.result, b.result);
+    a.params.forEach((p, i) => unify(p, b.params[i], onBind));
+    return unify(a.result, b.result, onBind);
   }
   if (a.tag === "tuple" && b.tag === "tuple" && a.items.length === b.items.length) {
-    a.items.forEach((x, i) => unify(x, b.items[i]));
+    a.items.forEach((x, i) => unify(x, b.items[i], onBind));
     return;
   }
   if (a.tag === "named" && b.tag === "named" && a.id === b.id && a.args.length === b.args.length) {
-    a.args.forEach((x, i) => unify(x, b.args[i]));
+    a.args.forEach((x, i) => unify(x, b.args[i], onBind));
     return;
   }
-  throw new Error(`type mismatch ${show(a)} vs ${show(b)}`);
+  throw new Error(typeMismatchMessage(a, b));
+}
+
+export function typeMismatchMessage(left: Ty, right: Ty): string {
+  return `type mismatch ${quoteType(left)} vs ${quoteType(right)}`;
+}
+
+export function quoteType(type: Ty): string {
+  return `"${show(type)}"`;
 }
 
 export function eq(left: Ty, right: Ty): Constraint {
   return { kind: "Eq", left, right };
 }
 
-export function solveConstraints(constraints: Constraint[]): void {
+export function solveConstraints(constraints: Constraint[], onBind?: UnifyBind): void {
   for (const c of constraints) {
-    if (c.kind === "Eq") unify(c.left, c.right);
+    if (c.kind === "Eq") unify(c.left, c.right, onBind);
   }
   constraints.length = 0;
 }

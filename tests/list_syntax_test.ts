@@ -56,6 +56,6 @@ Deno.test("list syntax requires an in-scope algebraic list model", async () => {
   await assertRejects(
     () => checkSource("let nums = [1, 2, 3];"),
     Error,
-    "unknown name Nil",
+    "unknown name Cons",
   );
 });

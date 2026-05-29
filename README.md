@@ -39,6 +39,7 @@ Workman keeps one obvious form when SML has both a core form and sugar:
 - SML `fun f x = e` reduces to Workman `let rec f = (x) => { e };`.
 - SML `structure M = struct ... end` reduces to a Workman file imported as a namespace:
   `from "./m.wm" import * as M;`.
+- `from "./m.wm" import *;` opens all exported values, constructors, and types into local scope.
 - Inline structures, functors, signatures, `fun`, and other SML conveniences are not syntax goals
   unless Workman needs them.
 
@@ -60,10 +61,11 @@ Workman/SML correspondence used by the tests.
 ```sh
 deno task check
 deno task test
+deno task wm run examples/factorial.wm
 deno task compile examples/factorial.wm /tmp/factorial.js
 deno run /tmp/factorial.js
-deno task compile examples/use_math.wm /tmp/use_math.js
-deno run /tmp/use_math.js
+deno task wm compile examples/use_math.wm /tmp/use_math.js
+deno task wm run examples/use_math.wm
 ```
 
 The example prints:
@@ -71,4 +73,11 @@ The example prints:
 ```txt
 120
 some
+```
+
+To install the local CLI as `wm`:
+
+```sh
+deno install --global --allow-read --allow-write --allow-run --name wm src/main.ts
+wm run examples/factorial.wm
 ```

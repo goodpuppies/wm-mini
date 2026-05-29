@@ -26,6 +26,7 @@ export type Decl =
 
 export type ImportClause =
   | Located<{ kind: "Namespace"; alias: string }>
+  | Located<{ kind: "All" }>
   | Located<{ kind: "Named"; specs: ImportSpec[] }>;
 export type ImportSpec = Located<{ name: string; alias?: string }>;
 export type Binding = Located<{ pattern: Pattern; annotation?: TypeExpr; value: Expr }>;

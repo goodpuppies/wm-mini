@@ -6,6 +6,14 @@ export type FrontendDiagnostic = {
   message: string;
   node?: AstNode;
   span?: SourceSpan;
+  related?: FrontendRelatedDiagnostic[];
+};
+
+export type FrontendRelatedDiagnostic = {
+  message: string;
+  node?: AstNode;
+  span?: SourceSpan;
+  primary?: boolean;
 };
 
 export class FrontendDiagnosticError extends Error {
@@ -22,6 +30,7 @@ export function diagnosticError(
   error: unknown,
   node: AstNode | undefined,
   code = classifyDiagnostic(errorMessage(error)),
+  related: FrontendRelatedDiagnostic[] = [],
 ): FrontendDiagnosticError {
   if (error instanceof FrontendDiagnosticError) return error;
   return new FrontendDiagnosticError({
@@ -30,6 +39,7 @@ export function diagnosticError(
     message: errorMessage(error),
     node,
     span: node?.span,
+    related,
   });
 }
 

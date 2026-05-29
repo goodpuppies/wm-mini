@@ -1,0 +1,48 @@
+export type Int_list = Empty | Cons<Number, Int_list>;
+
+export let rec myDiv = (n, d) => {
+  if (n < d) {0}
+  else {1 + myDiv(n - d, d)}
+};
+
+export let myMod = (n, d) => {
+  n - (d * (myDiv(n,d)))
+};
+
+export let divBy2 = (i) => {
+  myMod(i,2) == 0
+};
+
+export let rec sumList = (list) => {
+  let rec inner = (list, val) => {
+    match(list) {
+      Empty => {val},
+      Cons(i, rest) => {inner(rest, val+i)}
+    }
+  };
+  inner(list, 0)
+};
+
+
+export let rec isEvenLenght = (list) => {
+
+  let rec inner = (list, val) => {
+    match(list) {
+      Empty => {
+        if (val == 0) {
+          true
+        } else {
+          if (divBy2(val)) {
+            true
+          } else {
+            false
+          }
+        }
+      },
+      Cons(i, rest) => {
+        inner(rest, val+1)
+      }
+    }
+  };
+  inner(list, 0)
+};

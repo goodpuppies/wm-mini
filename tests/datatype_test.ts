@@ -35,6 +35,74 @@ Deno.test("constructor arity is checked in expressions and patterns", async () =
   );
 });
 
+Deno.test("value restriction keeps ordinary call results monomorphic", async () => {
+  await assertRejects(
+    () =>
+      checkSource(`
+        type Option<T> = None | Some<T>;
+        let make = () => { None };
+        let value = make();
+        let as_number: Option<Number> = value;
+        let as_string: Option<String> = value;
+      `),
+    Error,
+    "type mismatch",
+  );
+});
+
+Deno.test("value restriction still generalizes non-expansive constructor applications", async () => {
+  const result = await checkSource(`
+    type Option<T> = None | Some<T>;
+    let value = Some(None);
+    let as_number: Option<Option<Number>> = value;
+    let as_string: Option<Option<String>> = value;
+  `);
+
+  expectBinding(result.env, "value", { type: "Option<Option<'a>>", vars: 1 });
+});
+
+Deno.test("value restriction uses current identifier status for constructor applications", async () => {
+  await assertRejects(
+    () =>
+      checkSource(
+        `
+          datatype 'a option = NONE | SOME of 'a
+          val rec SOME = fn _ => NONE
+          val value = SOME 0
+          val as_number: int option = value
+          val as_string: string option = value
+        `,
+        { surface: "wmsml" },
+      ),
+    Error,
+    "type mismatch",
+  );
+});
+
+Deno.test("value restriction rejects unresolved top-level expansive type variables", async () => {
+  await assertRejects(
+    () =>
+      checkSource(`
+        type Option<T> = None | Some<T>;
+        let make = () => { None };
+        let value = make();
+      `),
+    Error,
+    "top-level free type variable in value",
+  );
+});
+
+Deno.test("value restriction allows later declarations to constrain expansive monotypes", async () => {
+  const result = await checkSource(`
+    type Option<T> = None | Some<T>;
+    let make = () => { None };
+    let value = make();
+    let as_number: Option<Number> = value;
+  `);
+
+  expectBinding(result.env, "value", { type: "Option<Number>", vars: 0 });
+});
+
 Deno.test("type constructor arity is checked for datatypes and aliases", async () => {
   await assertRejects(
     () => checkSource("type Box<T> = | Box<T>; let bad: Box = Box(1);"),

@@ -53,6 +53,7 @@ ImportDecl
 
 ImportClause
   = "*" __ "as" __ alias:Name { return at({ kind: "Namespace", alias }, location()); }
+  / "*" { return at({ kind: "All" }, location()); }
   / "{" _ specs:ImportSpecList? _ "}" { return at({ kind: "Named", specs: specs ?? [] }, location()); }
 
 ImportSpecList = first:ImportSpec rest:(_ "," _ s:ImportSpec { return s; })* _ ","? { return [first, ...rest]; }

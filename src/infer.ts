@@ -1,5 +1,10 @@
 import type { Binding, Decl, Expr, Module, Param } from "./ast.ts";
-import { diagnosticError, type FrontendDiagnostic, warningDiagnostic } from "./diagnostics.ts";
+import {
+  diagnosticError,
+  type FrontendDiagnostic,
+  type FrontendRelatedDiagnostic,
+  warningDiagnostic,
+} from "./diagnostics.ts";
 import {
   baseEnv,
   baseTypeEnv,
@@ -8,12 +13,15 @@ import {
   fn,
   fresh,
   freshTypeInfo,
+  ftv,
   generalize,
   instantiate,
   named,
   NumberTy,
   prune,
+  quoteType,
   Scheme,
+  show,
   StringTy,
   tuple,
   Ty,
@@ -21,6 +29,7 @@ import {
   TypeEnv,
   typeFromAst,
   TypeVarScope,
+  type UnifyBind,
   VoidTy,
 } from "./types.ts";
 import { checkExhaustive, isVectorExhaustive, mentionsLocalType } from "./infer/exhaustiveness.ts";
@@ -64,6 +73,7 @@ export type InferResult = {
 
 export { describeEnv, type TypeSnapshot } from "./infer/snapshots.ts";
 export type InferStep = { declIndex: number; env: Map<string, TypeSnapshot> };
+type TypeProvenance = Map<number, FrontendRelatedDiagnostic[]>;
 
 export function inferModule(module: Module, imports = new Map<string, InferResult>()): InferResult {
   return inferModuleWithSteps(module, imports).result;
@@ -83,6 +93,7 @@ export function inferModuleWithSteps(
   const warnings: string[] = [];
   const diagnostics: FrontendDiagnostic[] = [];
   const steps: InferStep[] = [];
+  const provenance: TypeProvenance = new Map();
   for (const [declIndex, decl] of module.decls.entries()) {
     if (decl.kind === "ImportDecl") {
       try {
@@ -108,12 +119,14 @@ export function inferModuleWithSteps(
         warnings,
         diagnostics,
         exportableTypeIds,
+        provenance,
       );
     } catch (error) {
       throw diagnosticError(error, decl.node);
     }
     steps.push({ declIndex, env: snapshotEnv(env) });
   }
+  assertNoTopLevelFreeTypeVars(env);
   const structure: StructureEnv = { values: env, types: typeEnv, adts };
   const exportedStructure: StructureEnv = {
     values: exports,
@@ -137,6 +150,22 @@ export function inferModuleWithSteps(
   };
 }
 
+function assertNoTopLevelFreeTypeVars(env: Env) {
+  const leaking = [...env.entries()]
+    .filter(([, scheme]) => [...ftv(scheme.type)].some((id) => !scheme.vars.includes(id)))
+    .map(([name, scheme]) => `${name}: ${showSchemeType(scheme)}`);
+  if (leaking.length === 0) return;
+  throw new Error(
+    `top-level free type variable in ${
+      leaking.join(", ")
+    }; add an annotation or use it at a concrete type`,
+  );
+}
+
+function showSchemeType(scheme: Scheme): string {
+  return show(scheme.type);
+}
+
 function isDecl(value: Decl | Expr): value is Decl {
   return value.kind === "ImportDecl" || value.kind === "LetDecl" ||
     value.kind === "TypeDecl" || value.kind === "RecordDecl";
@@ -153,6 +182,7 @@ function inferDecl(
   warnings: string[],
   diagnostics: FrontendDiagnostic[],
   exportableTypeIds: Set<number>,
+  provenance: TypeProvenance,
 ) {
   if (decl.kind === "ImportDecl") return;
   if (decl.kind === "RecordDecl") {
@@ -220,7 +250,7 @@ function inferDecl(
         );
       }
       const t = args.length === 0 ? result : fn([callArg(args)], result);
-      const scheme = generalize(env, t);
+      const scheme = { ...generalize(env, t), status: "constructor" as const };
       env.set(c.name, scheme);
       if (decl.exported) exports.set(c.name, scheme);
     }
@@ -232,7 +262,7 @@ function inferDecl(
   if (!decl.recursive) {
     const base = new Map(env);
     const inferred = decl.bindings.map((b) =>
-      inferBinding(b, base, typeEnv, adts, types, warnings, diagnostics, annotationVars)
+      inferBinding(b, base, typeEnv, adts, types, warnings, diagnostics, annotationVars, provenance)
     );
     inferred.forEach((result, i) => {
       if (result.refutable) {
@@ -245,7 +275,11 @@ function inferDecl(
         );
       }
       for (const [name, type] of result.bound) {
-        const scheme = generalize(base, type);
+        const scheme = withSchemeProvenance(
+          generalizeBinding(base, type, decl.bindings[i].value),
+          type,
+          provenance,
+        );
         env.set(name, scheme);
         if (decl.exported) {
           assertExportableType(scheme.type, exportableTypeIds, `exported value ${name}`);
@@ -267,19 +301,33 @@ function inferDecl(
   }
   const placeholders = decl.bindings.map(() => fresh());
   decl.bindings.forEach((b, i) =>
-    env.set((b.pattern as { name: string }).name, { vars: [], type: placeholders[i] })
+    env.set((b.pattern as { name: string }).name, {
+      vars: [],
+      type: placeholders[i],
+      status: "value",
+    })
   );
   decl.bindings.forEach((b, i) => {
-    constrain(
+    const name = (b.pattern as { name: string }).name;
+    constrainBinding(
+      name,
       placeholders[i],
-      inferExpr(b.value, env, typeEnv, adts, types, warnings, diagnostics),
+      inferExpr(b.value, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+      b.value,
+      b.pattern.node,
+      types,
+      provenance,
     );
     if (b.annotation) {
-      constrain(placeholders[i], typeFromAst(b.annotation, typeEnv, annotationVars));
+      constrainAt(placeholders[i], typeFromAst(b.annotation, typeEnv, annotationVars), b.value);
     }
   });
   decl.bindings.forEach((b, i) => {
-    const scheme = generalize(base, placeholders[i]);
+    const scheme = withSchemeProvenance(
+      { ...generalize(base, placeholders[i]), status: "value" as const },
+      placeholders[i],
+      provenance,
+    );
     const name = (b.pattern as { name: string }).name;
     env.set(name, scheme);
     if (decl.exported) {
@@ -287,6 +335,47 @@ function inferDecl(
       exports.set(name, scheme);
     }
   });
+}
+
+function generalizeBinding(
+  env: Env,
+  type: Ty,
+  value: Expr,
+): Scheme {
+  return isNonExpansive(value, env)
+    ? { ...generalize(env, type), status: "value" }
+    : { vars: [], type, constraints: [], status: "value" };
+}
+
+function isNonExpansive(expr: Expr, env: Env): boolean {
+  switch (expr.kind) {
+    case "Int":
+    case "Float":
+    case "String":
+    case "Bool":
+    case "Void":
+    case "Var":
+    case "Lambda":
+      return true;
+    case "Tuple":
+      return expr.items.every((item) => isNonExpansive(item, env));
+    case "Record":
+      return expr.fields.every((field) => isNonExpansive(field.value, env));
+    case "Call":
+      return isConstructorExpr(expr.callee, env) &&
+        expr.args.every((arg) => isNonExpansive(arg, env));
+    default:
+      return false;
+  }
+}
+
+function isConstructorExpr(expr: Expr, env: Env): boolean {
+  return expr.kind === "Var" && env.get(expr.name)?.status === "constructor";
+}
+
+function withSchemeProvenance(scheme: Scheme, type: Ty, provenance: TypeProvenance): Scheme {
+  const notes = provenanceForType(type, provenance);
+  return notes.length ? { ...scheme, provenance: notes } : scheme;
 }
 
 function inferBinding(
@@ -298,6 +387,7 @@ function inferBinding(
   warnings: string[],
   diagnostics: FrontendDiagnostic[],
   annotationVars: TypeVarScope,
+  provenance: TypeProvenance,
 ): { bound: Map<string, Ty>; refutable: boolean } {
   try {
     const annotated = b.annotation ? typeFromAst(b.annotation, typeEnv, annotationVars) : undefined;
@@ -305,11 +395,11 @@ function inferBinding(
       ? inferRecordExpr(
         b.value,
         typeEnv,
-        (value) => inferExpr(value, env, typeEnv, adts, types, warnings, diagnostics),
+        (value) => inferExpr(value, env, typeEnv, adts, types, warnings, diagnostics, provenance),
         annotated,
       )
-      : inferExpr(b.value, env, typeEnv, adts, types, warnings, diagnostics);
-    if (annotated) constrain(t, annotated);
+      : inferExpr(b.value, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+    if (annotated) constrainAt(t, annotated, resultExpr(b.value));
     const bound = new Map<string, Ty>();
     inferBindingPattern(b.pattern, t, env, typeEnv, bound);
     const refutable = !isVectorExhaustive([[b.pattern]], [t], typeEnv, adts);
@@ -317,6 +407,273 @@ function inferBinding(
   } catch (error) {
     throw diagnosticError(error, b.node);
   }
+}
+
+function constrainBinding(
+  name: string,
+  expected: Ty,
+  actual: Ty,
+  value: Expr,
+  bindingNode: Binding["pattern"]["node"],
+  types: Map<Expr, Ty>,
+  provenance: TypeProvenance,
+) {
+  const expectedFn = prune(expected);
+  const actualFn = prune(actual);
+  if (value.kind === "Lambda" && expectedFn.tag === "fn" && actualFn.tag === "fn") {
+    if (expectedFn.params.length === actualFn.params.length) {
+      actualFn.params.forEach((param, i) =>
+        constrainAt(
+          expectedFn.params[i],
+          param,
+          value.params[i],
+          () => `type mismatch ${quoteType(expectedFn.params[i])} vs ${quoteType(param)}`,
+        )
+      );
+      const evidence = recursiveResultEvidence(name, value, expectedFn.result, types);
+      const bodyResult = resultExpr(value.body);
+      constrainAt(
+        expectedFn.result,
+        actualFn.result,
+        evidence[0]?.expr ?? bodyResult,
+        () => `type mismatch ${quoteType(expectedFn.result)} vs ${quoteType(actualFn.result)}`,
+        evidence.length > 0
+          ? [
+            {
+              message: `body: ${show(actualFn.result)}`,
+              node: bodyResult.node,
+              span: bodyResult.node?.span,
+            },
+            {
+              message: "rec: occurrences share one monomorphic type",
+              node: bindingNode,
+              span: bindingNode?.span,
+            },
+            ...expressionTypeEvidence(value, expectedFn.result, types),
+            ...provenanceFor(evidence[0].expr, types, provenance),
+            ...evidence.slice(1).map((item) => item.related),
+          ]
+          : [],
+      );
+      return;
+    }
+  }
+  constrainAt(expected, actual, resultExpr(value));
+}
+
+function constrainAt(
+  left: Ty,
+  right: Ty,
+  expr: Expr | Param | undefined,
+  message?: () => string,
+  related: FrontendRelatedDiagnostic[] = [],
+  provenance?: TypeProvenance,
+  reason?: FrontendRelatedDiagnostic,
+) {
+  try {
+    constrain(
+      left,
+      right,
+      provenance && reason ? rememberProvenance(provenance, reason) : undefined,
+    );
+  } catch (error) {
+    const primary = related.find((item) => item.primary);
+    throw diagnosticError(
+      message ? new Error(message()) : error,
+      primary?.node ?? expr?.node,
+      undefined,
+      primary ? related.filter((item) => item !== primary) : related,
+    );
+  }
+}
+
+function rememberProvenance(
+  provenance: TypeProvenance,
+  reason: FrontendRelatedDiagnostic,
+): UnifyBind {
+  return (variable) => {
+    const current = provenance.get(variable.id) ?? [];
+    provenance.set(variable.id, dedupeRelated([...current, reason]));
+  };
+}
+
+function provenanceFor(
+  expr: Expr,
+  types: Map<Expr, Ty>,
+  provenance: TypeProvenance,
+): FrontendRelatedDiagnostic[] {
+  const type = types.get(expr);
+  return type ? provenanceForType(type, provenance) : [];
+}
+
+function provenanceForType(type: Ty, provenance: TypeProvenance): FrontendRelatedDiagnostic[] {
+  return dedupeRelated(collectProvenance(type, provenance));
+}
+
+function collectProvenance(
+  type: Ty,
+  provenance: TypeProvenance,
+  seen = new Set<number>(),
+): FrontendRelatedDiagnostic[] {
+  if (type.tag === "var") {
+    if (seen.has(type.id)) return [];
+    seen.add(type.id);
+    const local = provenance.get(type.id) ?? [];
+    return dedupeRelated([
+      ...local,
+      ...(type.instance ? collectProvenance(type.instance, provenance, seen) : []),
+    ]);
+  }
+  if (type.tag === "fn") {
+    return dedupeRelated([
+      ...type.params.flatMap((param) => collectProvenance(param, provenance, seen)),
+      ...collectProvenance(type.result, provenance, seen),
+    ]);
+  }
+  if (type.tag === "tuple") {
+    return dedupeRelated(type.items.flatMap((item) => collectProvenance(item, provenance, seen)));
+  }
+  if (type.tag === "named") {
+    return dedupeRelated(type.args.flatMap((arg) => collectProvenance(arg, provenance, seen)));
+  }
+  return [];
+}
+
+function dedupeRelated(items: FrontendRelatedDiagnostic[]): FrontendRelatedDiagnostic[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const span = item.span;
+    const key = `${item.message}:${span?.start ?? -1}:${span?.end ?? -1}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function resultExpr(expr: Expr): Expr {
+  if (expr.kind === "Block") return resultExpr(expr.result);
+  return expr;
+}
+
+function recursiveResultEvidence(
+  name: string,
+  expr: Expr,
+  resultType: Ty,
+  types: Map<Expr, Ty>,
+): { expr: Expr; related: FrontendRelatedDiagnostic }[] {
+  const target = show(resultType);
+  const evidence: { expr: Expr; related: FrontendRelatedDiagnostic }[] = [];
+  const visit = (node: Expr) => {
+    if (
+      node.kind === "Call" && node.callee.kind === "Var" && node.callee.name === name &&
+      types.has(node) && show(types.get(node)!) === target
+    ) {
+      evidence.push({
+        expr: node,
+        related: {
+          message: `occurrence: ${target}`,
+          node: node.node,
+          span: node.node?.span,
+        },
+      });
+    }
+    switch (node.kind) {
+      case "Tuple":
+        node.items.forEach(visit);
+        break;
+      case "Record":
+        node.fields.forEach((field) => visit(field.value));
+        break;
+      case "Lambda":
+        visit(node.body);
+        break;
+      case "Call":
+        visit(node.callee);
+        node.args.forEach(visit);
+        break;
+      case "If":
+        visit(node.cond);
+        visit(node.thenExpr);
+        visit(node.elseExpr);
+        break;
+      case "Match":
+        visit(node.value);
+        node.arms.forEach((arm) => visit(arm.body));
+        break;
+      case "Block":
+        node.items.forEach((item) => {
+          if (!isDecl(item)) visit(item);
+        });
+        visit(node.result);
+        break;
+      case "Binary":
+        visit(node.left);
+        visit(node.right);
+        break;
+      case "Unary":
+        visit(node.value);
+        break;
+    }
+  };
+  visit(expr);
+  return evidence;
+}
+
+function expressionTypeEvidence(
+  expr: Expr,
+  type: Ty,
+  types: Map<Expr, Ty>,
+): FrontendRelatedDiagnostic[] {
+  const target = show(type);
+  const evidence: FrontendRelatedDiagnostic[] = [];
+  const visit = (node: Expr) => {
+    if (node.kind === "Binary" && types.has(node) && show(types.get(node)!) === target) {
+      evidence.push({
+        message: `operator ${node.op}: ${target}`,
+        node: node.node,
+        span: node.node?.span,
+      });
+    }
+    switch (node.kind) {
+      case "Tuple":
+        node.items.forEach(visit);
+        break;
+      case "Record":
+        node.fields.forEach((field) => visit(field.value));
+        break;
+      case "Lambda":
+        visit(node.body);
+        break;
+      case "Call":
+        visit(node.callee);
+        node.args.forEach(visit);
+        break;
+      case "If":
+        visit(node.cond);
+        visit(node.thenExpr);
+        visit(node.elseExpr);
+        break;
+      case "Match":
+        visit(node.value);
+        node.arms.forEach((arm) => visit(arm.body));
+        break;
+      case "Block":
+        node.items.forEach((item) => {
+          if (!isDecl(item)) visit(item);
+        });
+        visit(node.result);
+        break;
+      case "Binary":
+        visit(node.left);
+        visit(node.right);
+        break;
+      case "Unary":
+        visit(node.value);
+        break;
+    }
+  };
+  visit(expr);
+  return dedupeRelated(evidence);
 }
 
 function inferExpr(
@@ -327,9 +684,10 @@ function inferExpr(
   types: Map<Expr, Ty>,
   warnings: string[] = [],
   diagnostics: FrontendDiagnostic[] = [],
+  provenance: TypeProvenance = new Map(),
 ): Ty {
   try {
-    return inferExprInner(expr, env, typeEnv, adts, types, warnings, diagnostics);
+    return inferExprInner(expr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
   } catch (error) {
     throw diagnosticError(error, expr.node);
   }
@@ -343,6 +701,7 @@ function inferExprInner(
   types: Map<Expr, Ty>,
   warnings: string[] = [],
   diagnostics: FrontendDiagnostic[] = [],
+  provenance: TypeProvenance = new Map(),
 ): Ty {
   let t: Ty;
   switch (expr.kind) {
@@ -370,14 +729,16 @@ function inferExprInner(
     }
     case "Tuple":
       t = tuple(
-        expr.items.map((x) => inferExpr(x, env, typeEnv, adts, types, warnings, diagnostics)),
+        expr.items.map((x) =>
+          inferExpr(x, env, typeEnv, adts, types, warnings, diagnostics, provenance)
+        ),
       );
       break;
     case "Record":
       t = inferRecordExpr(
         expr,
         typeEnv,
-        (value) => inferExpr(value, env, typeEnv, adts, types, warnings, diagnostics),
+        (value) => inferExpr(value, env, typeEnv, adts, types, warnings, diagnostics, provenance),
       );
       break;
     case "Lambda": {
@@ -389,34 +750,108 @@ function inferExprInner(
       );
       t = fn(
         [callArg(params)],
-        inferExpr(expr.body, local, typeEnv, adts, types, warnings, diagnostics),
+        inferExpr(expr.body, local, typeEnv, adts, types, warnings, diagnostics, provenance),
       );
       break;
     }
     case "Call": {
       const result = fresh();
+      const callee = inferExpr(
+        expr.callee,
+        env,
+        typeEnv,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+      );
+      const calleeProvenance = expr.callee.kind === "Var"
+        ? (env.get(expr.callee.name)?.provenance ?? [])
+        : [];
       const arg = callArg(
-        expr.args.map((a) => inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics)),
+        expr.args.map((a) =>
+          inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics, provenance)
+        ),
       );
-      constrain(
-        inferExpr(expr.callee, env, typeEnv, adts, types, warnings, diagnostics),
-        fn([arg], result),
-      );
+      const calleeFn = prune(callee);
+      if (calleeFn.tag === "fn" && calleeFn.params.length === 1) {
+        const argExpr = expr.args.length === 1 ? expr.args[0] : expr;
+        constrainAt(
+          calleeFn.params[0],
+          arg,
+          argExpr,
+          undefined,
+          calleeProvenance,
+          provenance,
+          {
+            message: "call argument",
+            node: expr.node,
+            span: expr.node?.span,
+            primary: true,
+          },
+        );
+        constrainAt(result, calleeFn.result, expr);
+      } else {
+        constrainAt(
+          callee,
+          fn([arg], result),
+          expr,
+          undefined,
+          calleeProvenance,
+          provenance,
+          {
+            message: "call argument",
+            node: expr.node,
+            span: expr.node?.span,
+            primary: true,
+          },
+        );
+      }
       t = result;
       break;
     }
     case "If":
-      constrain(inferExpr(expr.cond, env, typeEnv, adts, types, warnings, diagnostics), BoolTy);
-      t = inferExpr(expr.thenExpr, env, typeEnv, adts, types, warnings, diagnostics);
-      constrain(t, inferExpr(expr.elseExpr, env, typeEnv, adts, types, warnings, diagnostics));
+      constrain(
+        inferExpr(expr.cond, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+        BoolTy,
+      );
+      t = inferExpr(expr.thenExpr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+      constrain(
+        t,
+        inferExpr(expr.elseExpr, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+      );
       break;
     case "Match": {
-      const valueType = inferExpr(expr.value, env, typeEnv, adts, types, warnings, diagnostics);
+      const valueType = inferExpr(
+        expr.value,
+        env,
+        typeEnv,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+      );
       t = fresh();
       for (const arm of expr.arms) {
         const local = new Map(env);
         inferPattern(arm.pattern, valueType, local, typeEnv, adts);
-        constrain(t, inferExpr(arm.body, local, typeEnv, adts, types, warnings, diagnostics));
+        const armType = inferExpr(
+          arm.body,
+          local,
+          typeEnv,
+          adts,
+          types,
+          warnings,
+          diagnostics,
+          provenance,
+        );
+        constrainAt(t, armType, arm.body, undefined, [], provenance, {
+          message: "match arm result",
+          node: arm.body.node,
+          span: arm.body.node?.span,
+        });
       }
       const armPatterns = expr.arms.map((arm) => arm.pattern);
       warnRedundantMatchArms(armPatterns, valueType, typeEnv, adts, warnings, diagnostics);
@@ -444,10 +879,11 @@ function inferExprInner(
             warnings,
             diagnostics,
             new Set([...localTypes.values()].map((info) => info.id)),
+            provenance,
           )
-          : inferExpr(s, local, localTypes, adts, types, warnings, diagnostics)
+          : inferExpr(s, local, localTypes, adts, types, warnings, diagnostics, provenance)
       );
-      t = inferExpr(expr.result, local, localTypes, adts, types, warnings, diagnostics);
+      t = inferExpr(expr.result, local, localTypes, adts, types, warnings, diagnostics, provenance);
       if (mentionsLocalType(t, outerTypeIds)) throw new Error("local type escapes scope");
       break;
     }
@@ -459,11 +895,16 @@ function inferExprInner(
         instantiate(op),
         fn(
           [tuple([
-            inferExpr(expr.left, env, typeEnv, adts, types, warnings, diagnostics),
-            inferExpr(expr.right, env, typeEnv, adts, types, warnings, diagnostics),
+            inferExpr(expr.left, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+            inferExpr(expr.right, env, typeEnv, adts, types, warnings, diagnostics, provenance),
           ])],
           result,
         ),
+        rememberProvenance(provenance, {
+          message: `operator ${expr.op}: ${quoteType(instantiate(op))}`,
+          node: expr.node,
+          span: expr.node?.span,
+        }),
       );
       t = result;
       break;
@@ -471,12 +912,15 @@ function inferExprInner(
     case "Unary":
       if (expr.op === "-") {
         constrain(
-          inferExpr(expr.value, env, typeEnv, adts, types, warnings, diagnostics),
+          inferExpr(expr.value, env, typeEnv, adts, types, warnings, diagnostics, provenance),
           NumberTy,
         );
         t = NumberTy;
       } else {
-        constrain(inferExpr(expr.value, env, typeEnv, adts, types, warnings, diagnostics), BoolTy);
+        constrain(
+          inferExpr(expr.value, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+          BoolTy,
+        );
         t = BoolTy;
       }
       break;

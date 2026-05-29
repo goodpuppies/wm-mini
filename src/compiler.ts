@@ -1,18 +1,30 @@
 import type { Module } from "./ast.ts";
-import { emitBundle, emitModule } from "./emit.ts";
+import {
+  type CoreProgram,
+  coreProgramFromAnalysis,
+  coreProgramFromModule,
+} from "./core/artifact.ts";
+import { emitCoreProgram } from "./core/emit_js.ts";
+import { coreFromSurface } from "./core/from_surface.ts";
 import { inferModule, inferModuleWithSteps, type InferResult, type InferStep } from "./infer.ts";
 import { loadModuleGraph, type ModuleGraph, type ModuleGraphOptions } from "./module_graph.ts";
 import { parse, type Surface } from "./parser.ts";
 
-export type CompileOptions = { check?: boolean; surface?: Surface };
+export type CompileOptions = ModuleGraphOptions;
 
 export async function compile(source: string, options: CompileOptions = {}): Promise<string> {
   const ast = await parse(source, options.surface);
-  if (options.check ?? true) checkModuleWithoutImports(ast);
-  return emitModule(ast);
+  const result = checkModuleWithoutImports(ast);
+  return emitCoreProgram(coreProgramFromModule(ast, result));
 }
 
 export type CheckSourceOptions = { surface?: Surface };
+export type CoreSourceResult = { module: ReturnType<typeof coreFromSurface>; result: InferResult };
+export type CoreFileResult = {
+  graph: ModuleGraph;
+  results: Map<string, InferResult>;
+  core: CoreProgram;
+};
 
 export class ModuleAnalysisError extends Error {
   path: string;
@@ -35,6 +47,14 @@ export async function checkSource(
   return checkModuleWithoutImports(await parse(source, options.surface));
 }
 
+export async function coreSource(
+  source: string,
+  options: CheckSourceOptions = {},
+): Promise<CoreSourceResult> {
+  const module = await parse(source, options.surface);
+  return { module: coreFromSurface(module), result: checkModuleWithoutImports(module) };
+}
+
 export async function checkSourceSteps(
   source: string,
   options: CheckSourceOptions = {},
@@ -47,20 +67,19 @@ export async function checkSourceSteps(
 }
 
 export async function compileFile(input: string, options: CompileOptions = {}): Promise<string> {
-  const { graph } = await analyzeFile(input, options);
-  const entry = graph.nodes.get(graph.entry)!.module;
-  if (!(options.check ?? true)) return emitModule(entry);
-  const importedUnits = graph.order
-    .filter((path) => path !== graph.entry)
-    .map((path) => {
-      const node = graph.nodes.get(path)!;
-      return { name: node.emitName, module: node.module };
-    });
-  return emitBundle(importedUnits, entry);
+  return emitCoreProgram((await coreFile(input, options)).core);
 }
 
 export async function checkFile(input: string): Promise<Map<string, InferResult>> {
   return (await analyzeFile(input)).results;
+}
+
+export async function coreFile(
+  input: string,
+  options: ModuleGraphOptions = {},
+): Promise<CoreFileResult> {
+  const { graph, results } = await analyzeFile(input, options);
+  return { graph, results, core: coreProgramFromAnalysis(graph, results) };
 }
 
 export async function analyzeFile(

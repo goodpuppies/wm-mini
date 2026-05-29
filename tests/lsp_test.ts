@@ -32,7 +32,7 @@ Deno.test("lsp validation returns diagnostics for unsaved files and clears them"
   const broken = await validateUri(uri, docs.sourceOverrides());
   const brokenDiagnostics = await diagnosticsForPath(broken, main);
   assertEquals(brokenDiagnostics?.map((d) => d.code), ["type.mismatch"]);
-  assertEquals(brokenDiagnostics?.[0].range.start, { line: 0, character: 4 });
+  assertEquals(brokenDiagnostics?.[0].range.start, { line: 0, character: 16 });
   assertEquals(brokenDiagnostics?.[0].range.end, { line: 0, character: 17 });
 
   docs.change(uri, 'let x: String = "ok";', 2);
@@ -68,6 +68,90 @@ Deno.test("lsp validation reports imported module errors on the imported file", 
   assertEquals(libDiagnostics?.[0].range.start, { line: 0, character: 19 });
 });
 
+Deno.test("lsp validation localizes recursive binding return mismatches", async () => {
+  const dir = await Deno.makeTempDir();
+  const main = `${dir}/main.wm`;
+  const source = `
+type Int_list = Empty | Cons<Number, Int_list>;
+
+let rec sumList = (list, val) => {
+  match(list) => {
+    Empty => {val},
+    Cons(i, rest) => {sumList(rest, val+i)}
+  }
+};
+`;
+  await Deno.writeTextFile(main, source);
+
+  const diagnostics = await diagnosticsForPath(
+    await validateUri(pathToFileUri(main), new Map()),
+    main,
+  );
+  assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
+  assertEquals(
+    diagnostics?.[0].message,
+    'type mismatch "Number" vs "(Int_list) => Number"',
+  );
+  assertEquals(diagnostics?.[0].range.start, { line: 6, character: 22 });
+  assertEquals(diagnostics?.[0].range.end, { line: 6, character: 42 });
+  assertEquals(
+    diagnostics?.[0].relatedInformation?.[0].message,
+    "body: (Int_list) => Number",
+  );
+  assertEquals(diagnostics?.[0].relatedInformation?.[0].location.range.start, {
+    line: 4,
+    character: 2,
+  });
+  assertEquals(
+    diagnostics?.[0].relatedInformation?.[1].message,
+    "rec: occurrences share one monomorphic type",
+  );
+  assertEquals(diagnostics?.[0].relatedInformation?.[1].location.range.start, {
+    line: 3,
+    character: 8,
+  });
+  assertEquals(diagnostics?.[0].relatedInformation?.[2].message, "operator +: Number");
+  assertEquals(diagnostics?.[0].relatedInformation?.[2].location.range.start, {
+    line: 6,
+    character: 36,
+  });
+});
+
+Deno.test("lsp validation relates call argument provenance through published bindings", async () => {
+  const dir = await Deno.makeTempDir();
+  const main = `${dir}/main.wm`;
+  const source = `
+type Int_list = Empty | Cons<Number, Int_list>;
+
+let rec sumList = (list) => {
+  let rec inner = (list, acc) => {
+    match(list) {
+      Empty => {acc},
+      Cons(i, rest) => {inner(rest, acc+i)}
+    }
+  };
+  inner(list)
+};
+
+let bad = sumList(Cons(1, Empty));
+`;
+  await Deno.writeTextFile(main, source);
+
+  const diagnostics = await diagnosticsForPath(
+    await validateUri(pathToFileUri(main), new Map()),
+    main,
+  );
+  assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
+  assertEquals(
+    diagnostics?.[0].message,
+    'type mismatch "(Int_list, Number)" vs "Int_list"',
+  );
+  assertEquals(diagnostics?.[0].range.start, {
+    line: 10,
+    character: 2,
+  });
+});
+
 Deno.test("lsp validation reports unknown named imports on the import specifier", async () => {
   const dir = await Deno.makeTempDir();
   const lib = `${dir}/lib.wm`;
@@ -76,7 +160,10 @@ Deno.test("lsp validation reports unknown named imports on the import specifier"
   await Deno.writeTextFile(lib, "export let present = 1;");
   await Deno.writeTextFile(main, source);
 
-  const diagnostics = await diagnosticsForPath(await validateUri(pathToFileUri(main), new Map()), main);
+  const diagnostics = await diagnosticsForPath(
+    await validateUri(pathToFileUri(main), new Map()),
+    main,
+  );
   assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["module.unknown-import"]);
   assertEquals(diagnostics?.[0].range, charRange(source, "missing"));
 });
@@ -89,7 +176,10 @@ Deno.test("lsp validation reports duplicate named imports on the duplicate speci
   await Deno.writeTextFile(lib, "export let present = 1;");
   await Deno.writeTextFile(main, source);
 
-  const diagnostics = await diagnosticsForPath(await validateUri(pathToFileUri(main), new Map()), main);
+  const diagnostics = await diagnosticsForPath(
+    await validateUri(pathToFileUri(main), new Map()),
+    main,
+  );
   assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["module.duplicate-import"]);
   assertEquals(diagnostics?.[0].range, charRange(source, "present as present"));
 });
@@ -100,7 +190,10 @@ Deno.test("lsp validation reports unresolved import paths on the path literal", 
   const source = 'from "./missing.wm" import * as Missing; let x = 1;';
   await Deno.writeTextFile(main, source);
 
-  const diagnostics = await diagnosticsForPath(await validateUri(pathToFileUri(main), new Map()), main);
+  const diagnostics = await diagnosticsForPath(
+    await validateUri(pathToFileUri(main), new Map()),
+    main,
+  );
   assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["module.resolve-import"]);
   assertEquals(diagnostics?.[0].range, charRange(source, '"./missing.wm"'));
 });

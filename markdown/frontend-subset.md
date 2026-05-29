@@ -31,6 +31,7 @@ checking that equivalent `workman` and `wmsml` programs produce the same inferre
 Supported top-level declarations:
 
 - `from "./file.wm" import * as Name;`
+- `from "./file.wm" import *;`
 - `from "./file.wm" import { value, Type, Ctor as Alias };`
 - `let pattern = expr;`
 - `let rec name = expr;`

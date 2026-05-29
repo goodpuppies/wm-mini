@@ -1,0 +1,44 @@
+from "./math.wm" import *;
+
+type Expr = Lit<Number> | Add<Expr, Expr> | Mul<Expr, Expr>;
+
+let rec eval = match(expr) => {
+  Lit(i) => {i},
+  Add(e1, e2) => {eval(e1)+eval(e2)},
+  Mul(e1, e2) => {eval(e1)*eval(e2)}
+};
+
+type Tree = EmptyT | Node<Number, Tree, Tree>;
+
+let rec insert = (int, tree) => {
+  match(tree){
+    EmptyT => {Node(int, EmptyT, EmptyT)},
+    Node(val, t1,t2) => {
+      if (int < val) {
+        Node(val,insert(int, t1),t2)
+      } else {
+        Node(val,t1,insert(int, t2))
+      }
+    }
+  }
+};
+
+let rec treeMap = () => {
+
+};
+
+let stTree = {insert(50, EmptyT)};
+let stTree = {insert(1, stTree)};
+let stTree = {insert(4, stTree)};
+let stTree = {insert(60, stTree)};
+
+
+let main = () => {
+  --print("1",eval(Lit(1)));
+  --print("2",eval(Add(Lit(1),Lit(1))));
+  --print("3",eval(Mul(Lit(1),Lit(1))));
+  --print("suml", sumList(Cons(1,(Cons(1,(Cons(1,Empty)))))));
+  --print("isev", isEvenLenght(Cons(1,(Cons(1,(Cons(1,Cons(1,Empty))))))));
+  --print("isev", isEvenLenght(Cons(1,(Cons(1,(Cons(1,Empty)))))));
+  print("tre", stTree)
+};

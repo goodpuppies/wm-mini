@@ -14,6 +14,16 @@ export function addImport(
     addQualifiedTypes(typeEnv, clause.alias, imported.exportedStructure.types, clause);
     return;
   }
+  if (clause.kind === "All") {
+    addAllImports(
+      env,
+      typeEnv,
+      imported.exportedStructure.values,
+      imported.exportedStructure.types,
+      clause,
+    );
+    return;
+  }
   const values = new Set<string>();
   const types = new Set<string>();
   for (const spec of clause.specs) {
@@ -54,7 +64,12 @@ function addQualifiedImport(env: Env, alias: string, imported: Env, clause: Impo
   }
 }
 
-function addQualifiedTypes(typeEnv: TypeEnv, alias: string, imported: TypeEnv, clause: ImportClause) {
+function addQualifiedTypes(
+  typeEnv: TypeEnv,
+  alias: string,
+  imported: TypeEnv,
+  clause: ImportClause,
+) {
   for (const [name, info] of imported) {
     const local = `${alias}.${name}`;
     if (typeEnv.has(local)) {
@@ -62,4 +77,25 @@ function addQualifiedTypes(typeEnv: TypeEnv, alias: string, imported: TypeEnv, c
     }
     typeEnv.set(local, info);
   }
+}
+
+function addAllImports(
+  env: Env,
+  typeEnv: TypeEnv,
+  values: Env,
+  types: TypeEnv,
+  clause: ImportClause,
+) {
+  for (const name of values.keys()) {
+    if (env.has(name)) {
+      throw diagnosticError(new Error(`duplicate value import ${name}`), clause.node);
+    }
+  }
+  for (const name of types.keys()) {
+    if (typeEnv.has(name)) {
+      throw diagnosticError(new Error(`duplicate type import ${name}`), clause.node);
+    }
+  }
+  for (const [name, scheme] of values) env.set(name, scheme);
+  for (const [name, info] of types) typeEnv.set(name, info);
 }

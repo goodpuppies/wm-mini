@@ -61,7 +61,7 @@ export function inferPattern(
     case "PVar":
       if (binders.has(p.name)) throw new Error(`duplicate pattern binder ${p.name}`);
       binders.add(p.name);
-      env.set(p.name, { vars: [], type: expected });
+      env.set(p.name, { vars: [], type: expected, status: "value" });
       return expected;
     case "PPinned": {
       const scheme = env.get(p.name);
@@ -102,6 +102,7 @@ export function inferPattern(
     case "PCtor": {
       const scheme = env.get(p.name);
       if (!scheme) throw new Error(`unknown constructor ${p.name}`);
+      if (scheme.status !== "constructor") throw new Error(`${p.name} is not a constructor`);
       const ctor = instantiate(scheme);
       if (ctor.tag === "fn") {
         const args = ctor.params.length === 1 ? expandCallArg(ctor.params[0]) : ctor.params;
@@ -174,6 +175,9 @@ export function inferBindingPattern(
     case "PCtor": {
       const scheme = env.get(pattern.name);
       if (!scheme) throw new Error(`unknown constructor ${pattern.name}`);
+      if (scheme.status !== "constructor") {
+        throw new Error(`${pattern.name} is not a constructor`);
+      }
       const ctor = instantiate(scheme);
       if (ctor.tag === "fn") {
         const args = ctor.params.length === 1 ? expandCallArg(ctor.params[0]) : ctor.params;

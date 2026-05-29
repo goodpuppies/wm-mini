@@ -41,6 +41,36 @@ Deno.test("named import allows a type and constructor to share one local spellin
   await checkFile(`${dir}/main.wm`);
 });
 
+Deno.test("star import without alias opens exported members", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(
+    `${dir}/lib.wm`,
+    "export type Box<T> = | Box<T>; export let make = (x) => { Box(x) };",
+  );
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    'from "./lib.wm" import *; let x: Box<Number> = make(1); let y = Box(2);',
+  );
+
+  await checkFile(`${dir}/main.wm`);
+});
+
+Deno.test("star import without alias rejects collisions", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/a.wm`, "export let value = 1;");
+  await Deno.writeTextFile(`${dir}/b.wm`, "export let value = 2;");
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    `
+      from "./a.wm" import *;
+      from "./b.wm" import *;
+      let x = value;
+    `,
+  );
+
+  await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "duplicate value import value");
+});
+
 Deno.test("type imports reject collisions with existing local type declarations", async () => {
   const dir = await Deno.makeTempDir();
   await Deno.writeTextFile(`${dir}/lib.wm`, "export type Box<T> = T;");

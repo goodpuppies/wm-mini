@@ -22,6 +22,15 @@ export type LspDiagnostic = {
   code: string;
   source: "wm-mini";
   message: string;
+  relatedInformation?: LspRelatedInformation[];
+};
+
+export type LspRelatedInformation = {
+  location: {
+    uri: string;
+    range: LspRange;
+  };
+  message: string;
 };
 
 export async function validateUri(
@@ -36,6 +45,7 @@ export async function validateUri(
       diagnostics: diagnosticsFor(
         analysis.results.get(path),
         analysis.graph.nodes.get(path)?.source ?? "",
+        pathToFileUri(path),
       ),
     }));
   } catch (error) {
@@ -44,7 +54,7 @@ export async function validateUri(
       const diagnosticUri = pathToFileUri(error.path);
       const result = {
         uri: diagnosticUri,
-        diagnostics: [errorDiagnostic(error.originalError, error.source)],
+        diagnostics: [errorDiagnostic(error.originalError, error.source, diagnosticUri)],
       };
       return diagnosticUri === entryUri ? [result] : [{ uri: entryUri, diagnostics: [] }, result];
     }
@@ -53,25 +63,31 @@ export async function validateUri(
       const diagnosticUri = pathToFileUri(error.path);
       const result = {
         uri: diagnosticUri,
-        diagnostics: [errorDiagnostic(error.originalError, error.source)],
+        diagnostics: [errorDiagnostic(error.originalError, error.source, diagnosticUri)],
       };
       return diagnosticUri === entryUri ? [result] : [{ uri: entryUri, diagnostics: [] }, result];
     }
     const canonical = canonicalPath(entryPath, sourceOverrides);
     return [{
       uri: pathToFileUri(canonical),
-      diagnostics: [errorDiagnostic(error, await sourceForPath(canonical, sourceOverrides))],
+      diagnostics: [
+        errorDiagnostic(
+          error,
+          await sourceForPath(canonical, sourceOverrides),
+          pathToFileUri(canonical),
+        ),
+      ],
     }];
   }
 }
 
-function diagnosticsFor(result: InferResult | undefined, source = ""): LspDiagnostic[] {
-  return result?.diagnostics.map((diagnostic) => lspDiagnostic(diagnostic, source)) ?? [];
+function diagnosticsFor(result: InferResult | undefined, source = "", uri = ""): LspDiagnostic[] {
+  return result?.diagnostics.map((diagnostic) => lspDiagnostic(diagnostic, source, uri)) ?? [];
 }
 
-function errorDiagnostic(error: unknown, source = ""): LspDiagnostic {
+function errorDiagnostic(error: unknown, source = "", uri = ""): LspDiagnostic {
   if (error instanceof FrontendDiagnosticError) {
-    return lspDiagnostic(error.diagnostic, source);
+    return lspDiagnostic(error.diagnostic, source, uri);
   }
   const message = errorMessage(error);
   return {
@@ -83,13 +99,20 @@ function errorDiagnostic(error: unknown, source = ""): LspDiagnostic {
   };
 }
 
-function lspDiagnostic(diagnostic: FrontendDiagnostic, source = ""): LspDiagnostic {
+function lspDiagnostic(diagnostic: FrontendDiagnostic, source = "", uri = ""): LspDiagnostic {
   return {
     range: diagnostic.span && source ? spanRange(source, diagnostic.span) : startRange,
     severity: diagnostic.severity === "error" ? 1 : 2,
     code: diagnostic.code,
     source: "wm-mini",
     message: diagnostic.message,
+    relatedInformation: diagnostic.related?.map((related) => ({
+      location: {
+        uri,
+        range: related.span && source ? spanRange(source, related.span) : startRange,
+      },
+      message: related.message,
+    })),
   };
 }
 

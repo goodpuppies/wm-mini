@@ -620,6 +620,9 @@ from "std/core/bool" import { boolAnd as andFn };
 from "std/list" import * as List;
 -- Use as: List.map, List.filter, etc.
 
+-- Open import (bring exported names into local scope)
+from "std/list" import *;
+
 -- Import types
 from "./option.wm" import { Option, Some, None };
 ```

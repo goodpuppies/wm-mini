@@ -1,8 +1,8 @@
-import { eq, prune, solveConstraints, tuple, type Ty, VoidTy } from "../types.ts";
+import { eq, prune, solveConstraints, tuple, type Ty, type UnifyBind, VoidTy } from "../types.ts";
 
-export function constrain(left: Ty, right: Ty) {
+export function constrain(left: Ty, right: Ty, onBind?: UnifyBind) {
   const constraints = [eq(left, right)];
-  solveConstraints(constraints);
+  solveConstraints(constraints, onBind);
 }
 
 export function callArg(items: Ty[]): Ty {
