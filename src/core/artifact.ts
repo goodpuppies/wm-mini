@@ -246,7 +246,7 @@ function assignPatternBinders(pattern: CorePattern, ids: CoreIdAllocator): [stri
 
 function isDecl(value: CoreDecl | CoreExpr): value is CoreDecl {
   return value.kind === "CoreImport" || value.kind === "CoreLet" ||
-    value.kind === "CoreType" || value.kind === "CoreRecord";
+    value.kind === "CoreJsImport" || value.kind === "CoreType" || value.kind === "CoreRecord";
 }
 
 function attachConstructorIds(
@@ -366,7 +366,8 @@ function resolveExprConstructors(expr: CoreExpr, env: Map<string, CtorId>) {
             resolveExprConstructors(binding.value, env);
           });
         } else if (
-          item.kind !== "CoreImport" && item.kind !== "CoreType" && item.kind !== "CoreRecord"
+          item.kind !== "CoreImport" && item.kind !== "CoreJsImport" &&
+          item.kind !== "CoreType" && item.kind !== "CoreRecord"
         ) {
           resolveExprConstructors(item, env);
         }

@@ -623,6 +623,13 @@ from "std/list" import * as List;
 -- Open import (bring exported names into local scope)
 from "std/list" import *;
 
+-- JS imports can infer types from TypeScript declarations
+from js.global("Math") import { max as jsmax, floor };
+from js.global("Math") import * as Math;
+
+-- Manual type annotations are available when needed
+from js.global("console") import { log: (String, Number) => Void } as console;
+
 -- Import types
 from "./option.wm" import { Option, Some, None };
 ```

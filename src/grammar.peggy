@@ -45,7 +45,7 @@
 
 Start = &{ nextNodeId = 0; return true; } _ decls:(_ d:TopDecl { return d; })* _ EOF { return mod(decls, location()); }
 
-TopDecl = ImportDecl / RecordDecl / TypeDecl / LetDecl
+TopDecl = JsImportDecl / ImportDecl / RecordDecl / TypeDecl / LetDecl
 
 ImportDecl
   = "from" __ path:String __ "import" __ clause:ImportClause _ ";"
@@ -58,6 +58,26 @@ ImportClause
 
 ImportSpecList = first:ImportSpec rest:(_ "," _ s:ImportSpec { return s; })* _ ","? { return [first, ...rest]; }
 ImportSpec = name:Name alias:(_ "as" _ a:Identifier { return a; })? { return at({ name, alias }, location()); }
+
+JsImportDecl
+  = "from" __ target:JsTarget __ "import" __ clause:JsImportClause _ ";"
+    { return at({ kind: "JsImportDecl", target, clause }, location()); }
+
+JsTarget
+  = "js.global" _ "(" _ path:String _ ")"
+    { return at({ kind: "JsGlobal", path: path.value }, location()); }
+  / "js.module" _ "(" _ specifier:String _ ")"
+    { return at({ kind: "JsModule", specifier: specifier.value }, location()); }
+
+JsImportClause
+  = "*" __ "as" __ alias:Name { return at({ kind: "Namespace", alias }, location()); }
+  / "{" _ specs:JsImportSpecList? _ "}" alias:(__ "as" __ a:Name { return a; })?
+    { return at({ kind: "Named", specs: specs ?? [], alias }, location()); }
+
+JsImportSpecList = first:JsImportSpec rest:(_ "," _ s:JsImportSpec { return s; })* _ ","? { return [first, ...rest]; }
+JsImportSpec
+  = name:Identifier alias:(_ "as" _ a:Name { return a; })? type:(_ ":" _ t:TypeExpr { return t; })?
+    { return at({ name, alias, type }, location()); }
 
 LetDecl
   = exported:ExportModifier? "let" __ rec:("rec" __)? first:LetBinding rest:(_ "and" __ b:LetBinding { return b; })* _ ";"

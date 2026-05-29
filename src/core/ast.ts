@@ -1,5 +1,5 @@
 import type { AstNode } from "../source.ts";
-import type { TypeExpr } from "../ast.ts";
+import type { JsImportClause, JsTarget, TypeExpr } from "../ast.ts";
 import type { BindingId, CtorId } from "./ids.ts";
 
 export type CoreModule = {
@@ -10,6 +10,12 @@ export type CoreModule = {
 
 export type CoreDecl =
   | { kind: "CoreImport"; path: string; node?: AstNode }
+  | {
+    kind: "CoreJsImport";
+    clause: JsImportClause;
+    target: JsTarget;
+    node?: AstNode;
+  }
   | {
     kind: "CoreLet";
     exported: boolean;

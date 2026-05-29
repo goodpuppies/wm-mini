@@ -72,7 +72,7 @@ export async function deactivate(): Promise<void> {
 function denoServer(command: string, serverPath: string) {
   return {
     command,
-    args: ["run", "--allow-read", serverPath],
+    args: ["run", "--allow-read", "--allow-env", serverPath],
     transport: TransportKind.stdio,
     options: { cwd: path.dirname(path.dirname(path.dirname(serverPath))) },
   };

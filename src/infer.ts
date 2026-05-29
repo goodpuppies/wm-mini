@@ -54,6 +54,7 @@ import {
 } from "./infer/module_exports.ts";
 import { inferDottedVar, inferRecordExpr } from "./infer/records.ts";
 import { snapshotEnv, type TypeSnapshot } from "./infer/snapshots.ts";
+import { jsGlobalMember, jsGlobalMembers, jsModuleMember, jsModuleMembers } from "./js_types.ts";
 import { callArg, constrain } from "./infer/shared.ts";
 
 export type StructureEnv = { values: Env; types: TypeEnv; adts: Map<number, TypeDeclInfo> };
@@ -168,7 +169,7 @@ function showSchemeType(scheme: Scheme): string {
 
 function isDecl(value: Decl | Expr): value is Decl {
   return value.kind === "ImportDecl" || value.kind === "LetDecl" ||
-    value.kind === "TypeDecl" || value.kind === "RecordDecl";
+    value.kind === "JsImportDecl" || value.kind === "TypeDecl" || value.kind === "RecordDecl";
 }
 
 function inferDecl(
@@ -185,6 +186,33 @@ function inferDecl(
   provenance: TypeProvenance,
 ) {
   if (decl.kind === "ImportDecl") return;
+  if (decl.kind === "JsImportDecl") {
+    if (decl.clause.kind === "Namespace") {
+      for (const member of jsTargetMembers(decl.target)) {
+        const local = `${decl.clause.alias}.${member.name}`;
+        if (env.has(local)) throw new Error(`duplicate value import ${local}`);
+        const type = typeFromAst(member.type, typeEnv, new Map(), { allowFreeVars: true });
+        env.set(local, { ...generalize(env, type), status: "value" });
+      }
+      return;
+    }
+    rejectDuplicates(decl.clause.specs.map((spec) => spec.alias ?? spec.name), "JS import");
+    for (const spec of decl.clause.specs) {
+      const name = spec.alias ?? spec.name;
+      const local = decl.clause.alias ? `${decl.clause.alias}.${name}` : name;
+      if (env.has(local)) throw new Error(`duplicate value import ${local}`);
+      const resolved = spec.type ?? jsTargetMember(decl.target, spec.name)?.type;
+      if (!resolved) {
+        throw new Error(`unknown JS import ${jsTargetLabel(decl.target)}.${spec.name}`);
+      }
+      const type = typeFromAst(resolved, typeEnv, new Map(), { allowFreeVars: !spec.type });
+      const scheme = spec.type
+        ? { vars: [], type, constraints: [], status: "value" as const }
+        : { ...generalize(env, type), status: "value" as const };
+      env.set(local, scheme);
+    }
+    return;
+  }
   if (decl.kind === "RecordDecl") {
     if (typeEnv.has(decl.name)) throw new Error(`duplicate type declaration ${decl.name}`);
     rejectDuplicates(decl.params, "type parameter");
@@ -335,6 +363,22 @@ function inferDecl(
       exports.set(name, scheme);
     }
   });
+}
+
+function jsTargetMembers(target: Extract<Decl, { kind: "JsImportDecl" }>["target"]) {
+  return target.kind === "JsGlobal"
+    ? jsGlobalMembers(target.path)
+    : jsModuleMembers(target.specifier);
+}
+
+function jsTargetMember(target: Extract<Decl, { kind: "JsImportDecl" }>["target"], name: string) {
+  return target.kind === "JsGlobal"
+    ? jsGlobalMember(target.path, name)
+    : jsModuleMember(target.specifier, name);
+}
+
+function jsTargetLabel(target: Extract<Decl, { kind: "JsImportDecl" }>["target"]): string {
+  return target.kind === "JsGlobal" ? target.path : target.specifier;
 }
 
 function generalizeBinding(

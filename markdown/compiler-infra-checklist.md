@@ -155,14 +155,14 @@ Initial wm-mini rule:
 
 ## Phase 7: JS Interop Design
 
-| Task                                            | Status  | Notes                                                                                              |
-| ----------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------- |
-| Implement value restriction prerequisite        | Partial | Conservative value restriction is in inference; needs external-call coverage once externals exist. |
-| Design typed external binding declaration       | Gap     | Syntax undecided; should elaborate to external Core binding.                                       |
-| Support direct JS global/member names           | Gap     | Goal is to call real JS APIs, not generated wrapper APIs.                                          |
-| Define dynamic representation conversion rules  | Gap     | Start with Number/String/Bool/Void and functions.                                                  |
-| Reject or explicitly mark unsafe/raw boundaries | Gap     | Keep type holes out of ordinary code.                                                              |
-| Add no-bindgen smoke tests                      | Gap     | Example: `console.log`, maybe `Deno.readTextFile` later.                                           |
+| Task                                            | Status  | Notes                                                                                                                            |
+| ----------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Implement value restriction prerequisite        | Partial | Conservative value restriction is in inference; JS calls are ordinary expansive function calls.                                  |
+| Design typed external binding declaration       | Partial | JS imports support inferred members, star namespace imports, aliases, and manual annotations.                                    |
+| Support direct JS global/member names           | Partial | Core/JS path supports `Math.floor(...)`, `console.log(...)`, and aliased locals like `jsmax(...)`.                               |
+| Define dynamic representation conversion rules  | Partial | Number/String/Bool/Void pass directly; tuple function arguments spread at the JS call boundary.                                  |
+| Reject or explicitly mark unsafe/raw boundaries | Gap     | Keep type holes out of ordinary code.                                                                                            |
+| Add no-bindgen smoke tests                      | Partial | `console.log`, `Math.max`, `Math.floor`, `Math.sqrt`, and `node:crypto/createHash` smoke tests exist; `Deno.readTextFile` later. |
 
 ## Value Restriction Implementation Slice
 
@@ -182,7 +182,7 @@ Initial wm-mini rule:
    generalize. [Done]
 7. Reject unresolved top-level free monotype variables after whole-module inference, while allowing
    later declarations to constrain them first. [Done]
-8. Only after this is green, add `CoreExternal` and typed JS external declarations.
+8. Add typed JS imports after value restriction is green. [Partial]
 
 ## First Implementation Slice
 

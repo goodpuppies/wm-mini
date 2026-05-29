@@ -3,6 +3,9 @@
 Small VS Code client for wm-mini. It intentionally launches the language server from Deno source so
 frontend and LSP changes are picked up by running `wm-mini: Restart Language Server`.
 
+The server is launched with `--allow-read --allow-env`. Environment access is needed because the
+language server uses TypeScript's compiler API for JS FFI type reflection.
+
 ## Development
 
 ```sh

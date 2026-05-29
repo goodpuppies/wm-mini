@@ -33,6 +33,11 @@ Supported top-level declarations:
 - `from "./file.wm" import * as Name;`
 - `from "./file.wm" import *;`
 - `from "./file.wm" import { value, Type, Ctor as Alias };`
+- `from js.global("Math") import { max, floor };`
+- `from js.global("Math") import * as Math;`
+- `from js.global("Math") import { max as jsmax };`
+- `from js.global("console") import { log: (String, Number) => Void } as console;`
+- `from js.module("node:crypto") import { createHash };`
 - `let pattern = expr;`
 - `let rec name = expr;`
 - `let a = expr and b = expr;`

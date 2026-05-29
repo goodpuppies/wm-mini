@@ -9,6 +9,10 @@ function showDecl(decl: CoreDecl): string {
   switch (decl.kind) {
     case "CoreImport":
       return `import ${JSON.stringify(decl.path)}`;
+    case "CoreJsImport":
+      return decl.target.kind === "JsGlobal"
+        ? `import js.global(${JSON.stringify(decl.target.path)})`
+        : `import js.module(${JSON.stringify(decl.target.specifier)})`;
     case "CoreLet": {
       const head = `${decl.exported ? "export " : ""}let${decl.recursive ? " rec" : ""}`;
       return `${head} ${
@@ -128,5 +132,5 @@ function showCtorRef(name: string, id: number | undefined): string {
 
 function isDecl(value: CoreDecl | CoreExpr): value is CoreDecl {
   return value.kind === "CoreImport" || value.kind === "CoreLet" ||
-    value.kind === "CoreType" || value.kind === "CoreRecord";
+    value.kind === "CoreJsImport" || value.kind === "CoreType" || value.kind === "CoreRecord";
 }

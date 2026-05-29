@@ -12,6 +12,7 @@ experimenting with a complete language:
 - file imports as implicit SML-style structures
 - constructor, tuple, and eventually list/record pattern matching
 - expression blocks, lambdas, `if`, primitive operators, and `void`
+- typed JavaScript namespace imports for small FFI bindings
 - temporary JavaScript output for smoke tests
 
 Each source file should stay under 500 lines. When the language grows, split files before they
@@ -40,6 +41,12 @@ Workman keeps one obvious form when SML has both a core form and sugar:
 - SML `structure M = struct ... end` reduces to a Workman file imported as a namespace:
   `from "./m.wm" import * as M;`.
 - `from "./m.wm" import *;` opens all exported values, constructors, and types into local scope.
+- JavaScript globals can be imported through TypeScript-backed reflection:
+  `from js.global("Math") import { max as jsmax, floor };`.
+- JavaScript modules use the same import clauses with `js.module`, such as
+  `from js.module("node:crypto") import { createHash };`.
+- Manual JS type annotations are still available when reflection is too broad:
+  `from js.global("console") import { log: (String, Number) => Void } as console;`.
 - Inline structures, functors, signatures, `fun`, and other SML conveniences are not syntax goals
   unless Workman needs them.
 
@@ -78,6 +85,6 @@ some
 To install the local CLI as `wm`:
 
 ```sh
-deno install --global --allow-read --allow-write --allow-run --name wm src/main.ts
+deno install --global --allow-read --allow-write --allow-run --allow-env --name wm src/main.ts
 wm run examples/factorial.wm
 ```

@@ -153,6 +153,58 @@ Deno.test("supports named imports for values constructors and types", async () =
   await checkFile(`${dir}/main.wm`);
 });
 
+Deno.test("supports typed JS namespace imports", async () => {
+  const result = await checkSource(`
+    from js.global("console") import { log: (String, Number) => Void } as console;
+    let main = () => {
+      console.log("answer", 42)
+    };
+  `);
+
+  expectBinding(result.env, "console.log", { type: "((String, Number)) => Void", vars: 0 });
+  expectBinding(result.env, "main", { type: "(Void) => Void", vars: 0 });
+});
+
+Deno.test("supports inferred JS named and namespace imports", async () => {
+  const result = await checkSource(`
+    from js.global("Math") import { max as jsmax, floor };
+    from js.global("Math") import * as Math;
+    let bigger = jsmax(1, 2);
+    let rounded = floor(4.8);
+    let rooted = Math.sqrt(9);
+  `);
+
+  expectBinding(result.env, "jsmax", { type: "((Number, Number)) => Number", vars: 0 });
+  expectBinding(result.env, "floor", { type: "(Number) => Number", vars: 0 });
+  expectBinding(result.env, "Math.sqrt", { type: "(Number) => Number", vars: 0 });
+  expectBinding(result.env, "bigger", { type: "Number", vars: 0 });
+  expectBinding(result.env, "rounded", { type: "Number", vars: 0 });
+  expectBinding(result.env, "rooted", { type: "Number", vars: 0 });
+});
+
+Deno.test("supports inferred variadic JS imports as polymorphic unary functions", async () => {
+  const result = await checkSource(`
+    from js.global("console") import * as console;
+    let main = () => {
+      console.log("hello world");
+      console.log("answer", 42)
+    };
+  `);
+
+  expectBinding(result.env, "console.log", { type: "(a) => Void", vars: 1 });
+  expectBinding(result.env, "main", { type: "(Void) => Void", vars: 0 });
+});
+
+Deno.test("supports inferred JS module imports", async () => {
+  const result = await checkSource(`
+    from js.module("node:crypto") import { createHash };
+    let hash = createHash("sha256");
+  `);
+
+  expectBinding(result.env, "createHash", { type: "(String) => Js.Value", vars: 0 });
+  expectBinding(result.env, "hash", { type: "Js.Value", vars: 0 });
+});
+
 Deno.test("named imports reject missing members", async () => {
   const dir = await Deno.makeTempDir();
   await Deno.writeTextFile(`${dir}/lib.wm`, "export let present = 1;");

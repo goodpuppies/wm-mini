@@ -105,6 +105,7 @@ function collectDecl(decl: Decl): Target[] {
     case "TypeDecl":
     case "RecordDecl":
     case "ImportDecl":
+    case "JsImportDecl":
       return own;
   }
 }
@@ -198,7 +199,7 @@ function target(kind: Target["kind"], value: Decl | Expr | Pattern): Target[] {
 
 function isDecl(item: Decl | Expr): item is Decl {
   return item.kind === "ImportDecl" || item.kind === "LetDecl" ||
-    item.kind === "RecordDecl" || item.kind === "TypeDecl";
+    item.kind === "JsImportDecl" || item.kind === "RecordDecl" || item.kind === "TypeDecl";
 }
 
 function labelExpr(expr: Expr): string {

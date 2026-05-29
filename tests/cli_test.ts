@@ -228,9 +228,94 @@ Deno.test("cli run prints nested ADT values by constructor shape", async () => {
   assertEquals(result.stderr, "");
 });
 
+Deno.test("cli run calls typed JS namespace imports", async () => {
+  const dir = await Deno.makeTempDir();
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(
+    input,
+    `
+      from js.global("console") import { log: (String, Number) => Void } as console;
+      let main = () => {
+        console.log("answer", 42)
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout, "answer 42\n");
+  assertEquals(result.stderr, "");
+});
+
+Deno.test("cli run calls inferred JS imports", async () => {
+  const dir = await Deno.makeTempDir();
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(
+    input,
+    `
+      from js.global("Math") import { max as jsmax, floor };
+      from js.global("Math") import * as Math;
+      let main = () => {
+        print(jsmax(1, 2));
+        print(floor(4.8));
+        print(Math.sqrt(9))
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout, "2\n4\n3\n");
+  assertEquals(result.stderr, "");
+});
+
+Deno.test("cli run calls inferred variadic JS imports", async () => {
+  const dir = await Deno.makeTempDir();
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(
+    input,
+    `
+      from js.global("console") import * as console;
+      let main = () => {
+        console.log("hello world");
+        console.log("answer", 42)
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout, "hello world\nanswer 42\n");
+  assertEquals(result.stderr, "");
+});
+
+Deno.test("cli run calls inferred JS module imports", async () => {
+  const dir = await Deno.makeTempDir();
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(
+    input,
+    `
+      from js.module("node:crypto") import { createHash };
+      let main = () => {
+        createHash("sha256");
+        print("made")
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout, "made\n");
+  assertEquals(result.stderr, "");
+});
+
 async function runCli(args: string[]) {
   const result = await new Deno.Command(Deno.execPath(), {
-    args: ["run", "--allow-read", "--allow-write", "--allow-run", cli, ...args],
+    args: ["run", "--allow-read", "--allow-write", "--allow-run", "--allow-env", cli, ...args],
     stdout: "piped",
     stderr: "piped",
   }).output();

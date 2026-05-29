@@ -289,15 +289,26 @@ switchCtor value
 
 JavaScript interop should attach after elaboration, not at parse time.
 
-The first version should prefer explicit declarations over bindgen:
+The first version should prefer reflection-backed typed namespace imports over bindgen:
 
 ```txt
-foreign js consoleLog : String -> Void = "console.log"
-foreign js readTextFile : String -> Promise<String> = "Deno.readTextFile"
+from js.global("Math") import { max as jsmax, floor };
+from js.global("Math") import * as Math;
+from js.module("node:crypto") import { createHash };
 ```
 
-Exact syntax is not decided here. The important constraint is that interop imports elaborate into
-typed external bindings with explicit dynamic implementations.
+The important constraint is that interop imports elaborate into typed external bindings with
+explicit dynamic implementations. Use sites should keep ordinary JS spelling, such as
+`Math.floor(4.8)` or `console.log("answer", 42)`, rather than forcing renamed shims like
+`consoleLog`.
+
+Manual annotations are still the fallback when TypeScript reflection is unavailable, too broad, or
+when overload selection needs help:
+
+```txt
+from js.global("console") import { log: (String, Number) => Void } as console;
+from js.global("Deno") import { readTextFile: (String) => Js.Promise<String> } as Deno;
+```
 
 No JS interop design should require learning a fake replacement API for ordinary JS objects.
 
@@ -335,10 +346,11 @@ This is deliberately conservative. It may reject or monomorphize some programs t
 implementation could accept, but it preserves the important invariant: a single effectful or
 externally allocated runtime value must not be assigned multiple incompatible instantiations.
 
-External declarations should elaborate like ordinary typed values in the static basis:
+External namespace imports should elaborate like ordinary typed values in the static basis:
 
 ```txt
-external consoleLog : String -> Void = js.global("console.log")
+console.log : (String, Number) -> Void
+Math.floor : Number -> Number
 ```
 
 At runtime, applying an external value is a dynamic-basis operation analogous to applying an SML

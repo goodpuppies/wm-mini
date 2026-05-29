@@ -509,7 +509,7 @@ function charRange(source: string, text: string) {
 
 async function runLsp(steps: (RpcMessage | (() => Promise<void>))[]): Promise<RpcMessage[]> {
   const child = new Deno.Command(Deno.execPath(), {
-    args: ["run", "--allow-read", "src/lsp/server.ts"],
+    args: ["run", "--allow-read", "--allow-env", "src/lsp/server.ts"],
     cwd: new URL("../", import.meta.url).pathname,
     stdin: "piped",
     stdout: "piped",

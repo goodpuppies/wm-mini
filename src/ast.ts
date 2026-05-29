@@ -6,6 +6,7 @@ export type Module = Located<{ kind: "Module"; decls: Decl[] }>;
 
 export type Decl =
   | Located<{ kind: "ImportDecl"; path: string; pathNode?: AstNode; clause: ImportClause }>
+  | Located<{ kind: "JsImportDecl"; target: JsTarget; clause: JsImportClause }>
   | Located<{ kind: "LetDecl"; exported: boolean; recursive: boolean; bindings: Binding[] }>
   | Located<{
     kind: "RecordDecl";
@@ -29,6 +30,13 @@ export type ImportClause =
   | Located<{ kind: "All" }>
   | Located<{ kind: "Named"; specs: ImportSpec[] }>;
 export type ImportSpec = Located<{ name: string; alias?: string }>;
+export type JsTarget =
+  | Located<{ kind: "JsGlobal"; path: string }>
+  | Located<{ kind: "JsModule"; specifier: string }>;
+export type JsImportClause =
+  | Located<{ kind: "Namespace"; alias: string }>
+  | Located<{ kind: "Named"; specs: JsImportSpec[]; alias?: string }>;
+export type JsImportSpec = Located<{ name: string; alias?: string; type?: TypeExpr }>;
 export type Binding = Located<{ pattern: Pattern; annotation?: TypeExpr; value: Expr }>;
 export type CtorDecl = Located<{ name: string; args: TypeExpr[] }>;
 export type RecordFieldDecl = Located<{ name: string; type: TypeExpr }>;

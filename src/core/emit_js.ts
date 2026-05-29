@@ -10,6 +10,19 @@ export function emitCoreProgram(program: CoreProgram): string {
   return [
     '"use strict";',
     "const __wm_tuple = (...items) => items;",
+    `const __wm_js_global = (path) => path.split(".").reduce((value, key) => value?.[key], globalThis);`,
+    `const __wm_js_member = (path) => {
+  const parts = path.split(".");
+  const key = parts.pop();
+  const owner = parts.length === 0 ? globalThis : __wm_js_global(parts.join("."));
+  const value = owner?.[key];
+  return typeof value === "function" ? value.bind(owner) : value;
+};`,
+    `const __wm_js_member_obj = (owner, key) => {
+  const value = owner?.[key];
+  return typeof value === "function" ? value.bind(owner) : value;
+};`,
+    `const __wm_js_call = (fn, arg) => Array.isArray(arg) ? fn(...arg) : fn(arg);`,
     `const __wm_eq = (a, b) => {
   if (a === b) return true;
   if (Array.isArray(a) || Array.isArray(b)) {
@@ -114,6 +127,41 @@ function emitImportAliases(artifact: CoreModuleArtifact, program: CoreProgram): 
 
 function emitDecl(decl: CoreDecl): string[] {
   if (decl.kind === "CoreImport" || decl.kind === "CoreRecord") return [];
+  if (decl.kind === "CoreJsImport") {
+    const target = jsTargetRef(decl.target);
+    const prefix = target.setup ? [target.setup] : [];
+    if (decl.clause.kind === "Namespace") {
+      return [
+        ...prefix,
+        `const ${
+          id(decl.clause.alias)
+        } = new Proxy({}, { get: (_target, key) => (__arg) => __wm_js_call(${
+          jsMemberRef(target, "String(key)")
+        }, __arg) });`,
+      ];
+    }
+    const alias = decl.clause.alias;
+    if (alias) {
+      return [
+        ...prefix,
+        `const ${id(alias)} = { ${
+          decl.clause.specs.map((spec) =>
+            `${id(spec.alias ?? spec.name)}: (__arg) => __wm_js_call(${
+              jsMemberRef(target, JSON.stringify(spec.name))
+            }, __arg)`
+          ).join(", ")
+        } };`,
+      ];
+    }
+    return [
+      ...prefix,
+      ...decl.clause.specs.map((spec) =>
+        `const ${id(spec.alias ?? spec.name)} = (__arg) => __wm_js_call(${
+          jsMemberRef(target, JSON.stringify(spec.name))
+        }, __arg);`
+      ),
+    ];
+  }
   if (decl.kind === "CoreType") {
     if (decl.alias) return [];
     return decl.ctors.map((ctor) => {
@@ -205,7 +253,34 @@ function emitBlockItem(item: CoreDecl | CoreExpr): string {
 
 function isDecl(value: CoreDecl | CoreExpr): value is CoreDecl {
   return value.kind === "CoreImport" || value.kind === "CoreLet" ||
-    value.kind === "CoreType" || value.kind === "CoreRecord";
+    value.kind === "CoreJsImport" || value.kind === "CoreType" || value.kind === "CoreRecord";
+}
+
+type JsTargetRef = { kind: "global"; path: string; setup?: string } | {
+  kind: "module";
+  name: string;
+  setup: string;
+};
+
+let jsImportTemp = 0;
+
+function jsTargetRef(target: Extract<CoreDecl, { kind: "CoreJsImport" }>["target"]): JsTargetRef {
+  if (target.kind === "JsGlobal") return { kind: "global", path: target.path };
+  if (target.kind === "JsModule") {
+    const name = `__wm_js_module_${jsImportTemp++}`;
+    return {
+      kind: "module",
+      name,
+      setup: `const ${name} = await import(${JSON.stringify(target.specifier)});`,
+    };
+  }
+  throw new Error("unsupported JS import target");
+}
+
+function jsMemberRef(target: JsTargetRef, member: string): string {
+  return target.kind === "global"
+    ? `__wm_js_member(${JSON.stringify(target.path)} + "." + ${member})`
+    : `__wm_js_member_obj(${target.name}, ${member})`;
 }
 
 function emitPatternAssert(

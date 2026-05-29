@@ -36,6 +36,13 @@ function coreDeclFromSurface(decl: Decl): CoreDecl {
   switch (decl.kind) {
     case "ImportDecl":
       return { kind: "CoreImport", path: decl.path, node: decl.node };
+    case "JsImportDecl":
+      return {
+        kind: "CoreJsImport",
+        clause: decl.clause,
+        target: decl.target,
+        node: decl.node,
+      };
     case "LetDecl":
       return {
         kind: "CoreLet",
@@ -239,7 +246,7 @@ function coreRecordPatternFieldFromSurface(field: RecordPatternField): CoreRecor
 
 function isDecl(value: Decl | Expr): value is Decl {
   return value.kind === "ImportDecl" || value.kind === "LetDecl" ||
-    value.kind === "TypeDecl" || value.kind === "RecordDecl";
+    value.kind === "JsImportDecl" || value.kind === "TypeDecl" || value.kind === "RecordDecl";
 }
 
 function coreCtorPayload(args: CtorDecl["args"], node: CtorDecl["node"]) {
