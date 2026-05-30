@@ -344,6 +344,25 @@ typing rule is isolated in `src/infer/json.ts`: primitive ML values and existing
 embedded, while ordinary ML records, lists, and ADTs are rejected unless an explicit conversion
 exists later.
 
+The initial basis includes `Option<T> = None | Some<T>` and `Result<T, E> = Ok<T> | Err<E>`. Program
+declarations may shadow these initial-basis names, matching the normal ML expectation that the
+initial environment is not a permanent reserved namespace. This gives TypeScript nullish reflection
+a real ML target:
+
+```txt
+T | null | undefined  ->  Option<T>
+null | undefined      ->  None
+value                 ->  Some(value)
+```
+
+This mapping is part of FFI reflection and JS boundary codegen:
+
+- reflected TS unions containing `null` or `undefined` elaborate to `Option<T>`
+- optional TS parameters still elaborate as optional arities, not as `Option<T>` parameters
+- JS return values typed as `Option<T>` are wrapped with `None`/`Some`
+- Workman arguments typed as `Option<T>` are unwrapped before crossing into JS, with `None` becoming
+  `undefined`
+
 No JS interop design should require learning a fake replacement API for ordinary JS objects.
 
 ### Value Restriction Before Interop

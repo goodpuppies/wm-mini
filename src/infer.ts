@@ -6,6 +6,7 @@ import { addExportableTypes, exportedAdts } from "./infer/module_exports.ts";
 import { snapshotEnv, type TypeSnapshot } from "./infer/snapshots.ts";
 import type { TypeProvenance } from "./infer/provenance.ts";
 import {
+  baseAdts,
   baseEnv,
   baseTypeEnv,
   type Env,
@@ -43,11 +44,11 @@ export function inferModuleWithSteps(
   module: Module,
   imports = new Map<string, InferResult>(),
 ): { result: InferResult; steps: InferStep[] } {
-  const env = baseEnv();
-  const exports: Env = new Map();
   const typeEnv = baseTypeEnv();
+  const env = baseEnv(typeEnv);
+  const exports: Env = new Map();
   const typeExports: TypeEnv = new Map();
-  const adts = new Map<number, TypeDeclInfo>();
+  const adts = baseAdts(typeEnv);
   const exportableTypeIds = new Set([...typeEnv.values()].map((info) => info.id));
   const types = new Map<Expr, Ty>();
   const warnings: string[] = [];

@@ -12,6 +12,7 @@ const compilerOptions: ts.CompilerOptions = {
   module: ts.ModuleKind.NodeNext,
   moduleResolution: ts.ModuleResolutionKind.NodeNext,
   lib: ["lib.es2022.d.ts", "lib.dom.d.ts"],
+  strictNullChecks: true,
   skipLibCheck: true,
 };
 
@@ -165,6 +166,13 @@ function jsMemberTypeFromTsType(
 }
 
 function typeExprFromTsType(checker: ts.TypeChecker, type: ts.Type): TypeExpr | undefined {
+  const nullish = nullishUnionParts(type);
+  if (nullish) {
+    const inner = nullish.value
+      ? (typeExprFromTsType(checker, nullish.value) ?? name("Js.Value"))
+      : name("Js.Value");
+    return option(inner);
+  }
   const signature = type.getCallSignatures()[0];
   if (signature) return functionTypeFromSignature(checker, signature);
   if (isTsType(checker, type, "number")) return name("Number");
@@ -172,6 +180,19 @@ function typeExprFromTsType(checker: ts.TypeChecker, type: ts.Type): TypeExpr | 
   if (isTsType(checker, type, "boolean")) return name("Bool");
   if (type.flags & ts.TypeFlags.Void) return name("Void");
   return name("Js.Value");
+}
+
+function nullishUnionParts(type: ts.Type): { value?: ts.Type } | undefined {
+  if (!type.isUnion()) return undefined;
+  const valueTypes = type.types.filter((item) => !isNullish(item));
+  if (valueTypes.length === type.types.length) return undefined;
+  if (valueTypes.length === 0) return {};
+  if (valueTypes.length === 1) return { value: valueTypes[0] };
+  return {};
+}
+
+function isNullish(type: ts.Type): boolean {
+  return !!(type.flags & ts.TypeFlags.Null) || !!(type.flags & ts.TypeFlags.Undefined);
 }
 
 function functionTypeFromSignature(checker: ts.TypeChecker, signature: ts.Signature): TypeExpr {
@@ -191,10 +212,11 @@ function functionTypesFromSignature(checker: ts.TypeChecker, signature: ts.Signa
         const mapped = paramTypeExpr(checker, element, index);
         return [{ type: mapped, optional: false, rest: true }];
       }
-      const mapped = paramTypeExpr(checker, type, index);
+      const optional = !!declarationParam?.questionToken || !!declarationParam?.initializer;
+      const mapped = stripOptionForOptional(paramTypeExpr(checker, type, index), optional);
       return [{
         type: mapped,
-        optional: !!declarationParam?.questionToken || !!declarationParam?.initializer,
+        optional,
         rest: false,
       }];
     });
@@ -232,6 +254,12 @@ function paramTypeExpr(checker: ts.TypeChecker, type: ts.Type, index: number): T
 
 function restSlotType(type: TypeExpr, index: number): TypeExpr {
   return type.kind === "TVar" ? varType(`a${index}`) : type;
+}
+
+function stripOptionForOptional(type: TypeExpr, optional: boolean): TypeExpr {
+  return optional && type.kind === "TName" && type.name === "Option" && type.args.length === 1
+    ? type.args[0]
+    : type;
 }
 
 function lastRequiredParameter(parameters: { optional: boolean }[]): number {
@@ -281,6 +309,10 @@ function isAnyOrUnknown(type: ts.Type): boolean {
 
 function name(name: string): TypeExpr {
   return { kind: "TName", name, args: [] };
+}
+
+function option(inner: TypeExpr): TypeExpr {
+  return { kind: "TName", name: "Option", args: [inner] };
 }
 
 function varType(name: string): TypeExpr {

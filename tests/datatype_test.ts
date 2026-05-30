@@ -2,6 +2,31 @@ import { assertRejects } from "@std/assert";
 import { checkSource } from "../src/compiler.ts";
 import { expectBinding } from "./type_helpers.ts";
 
+Deno.test("basis exposes Option and Result constructors", async () => {
+  const result = await checkSource(`
+    let maybe = Some(1);
+    let missing: Option<Number> = None;
+    let ok = Ok("value");
+    let err: Result<String, Number> = Err(404);
+    let get = match(maybe) => {
+      Some(value) => { value },
+      None => { 0 },
+    };
+    let unwrapped = get(maybe);
+  `);
+
+  expectBinding(result.env, "Some", { type: "(T) => Option<T>", vars: 1 });
+  expectBinding(result.env, "None", { type: "Option<T>", vars: 1 });
+  expectBinding(result.env, "Ok", { type: "(T) => Result<T, E>", vars: 2 });
+  expectBinding(result.env, "Err", { type: "(E) => Result<T, E>", vars: 2 });
+  expectBinding(result.env, "maybe", { type: "Option<Number>", vars: 0 });
+  expectBinding(result.env, "missing", { type: "Option<Number>", vars: 0 });
+  expectBinding(result.env, "ok", { type: "Result<String, 'a>", vars: 1 });
+  expectBinding(result.env, "err", { type: "Result<String, Number>", vars: 0 });
+  expectBinding(result.env, "get", { type: "(Option<Number>) => Number", vars: 0 });
+  expectBinding(result.env, "unwrapped", { type: "Number", vars: 0 });
+});
+
 Deno.test("polymorphic datatype constructors generalize over type parameters", async () => {
   const result = await checkSource(`
     type Option<T> = None | Some<T>;

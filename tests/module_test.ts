@@ -41,6 +41,24 @@ Deno.test("named import allows a type and constructor to share one local spellin
   await checkFile(`${dir}/main.wm`);
 });
 
+Deno.test("named imports can replace basis option type and constructors together", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/lib.wm`, "export type Option<T> = None | Some<T>;");
+  await Deno.writeTextFile(
+    `${dir}/main.wm`,
+    `
+      from "./lib.wm" import { Option, Some, None };
+      let value: Option<Number> = Some(1);
+      let get = match(value) => {
+        Some(x) => { x },
+        None => { 0 },
+      };
+    `,
+  );
+
+  await checkFile(`${dir}/main.wm`);
+});
+
 Deno.test("star import without alias opens exported members", async () => {
   const dir = await Deno.makeTempDir();
   await Deno.writeTextFile(

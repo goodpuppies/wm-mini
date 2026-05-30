@@ -1,4 +1,5 @@
 import type { Binding, Decl, Expr } from "../ast.ts";
+import { basisCtorNamesForType } from "../basis.ts";
 import { diagnosticError, type FrontendDiagnostic, warningDiagnostic } from "../diagnostics.ts";
 import {
   type Env,
@@ -54,7 +55,7 @@ export function inferDecl(
     return;
   }
   if (decl.kind === "RecordDecl") {
-    inferRecordDecl(decl, typeEnv, typeExports, exportableTypeIds);
+    inferRecordDecl(decl, env, typeEnv, typeExports, exportableTypeIds);
     return;
   }
   if (decl.kind === "TypeDecl") {
@@ -77,11 +78,14 @@ export function inferDecl(
 
 function inferRecordDecl(
   decl: Extract<Decl, { kind: "RecordDecl" }>,
+  env: Env,
   typeEnv: TypeEnv,
   typeExports: TypeEnv,
   exportableTypeIds: Set<number>,
 ) {
-  if (typeEnv.has(decl.name)) throw new Error(`duplicate type declaration ${decl.name}`);
+  const existing = typeEnv.get(decl.name);
+  if (existing && !existing.basis) throw new Error(`duplicate type declaration ${decl.name}`);
+  if (existing?.basis) removeBasisConstructors(env, decl.name);
   rejectDuplicates(decl.params, "type parameter");
   rejectDuplicates(decl.fields.map((field) => field.name), "record field");
   const info = freshTypeInfo(decl.name, decl.params.length);
@@ -112,7 +116,9 @@ function inferTypeDecl(
   adts: Map<number, TypeDeclInfo>,
   exportableTypeIds: Set<number>,
 ) {
-  if (typeEnv.has(decl.name)) throw new Error(`duplicate type declaration ${decl.name}`);
+  const existing = typeEnv.get(decl.name);
+  if (existing && !existing.basis) throw new Error(`duplicate type declaration ${decl.name}`);
+  if (existing?.basis) removeBasisConstructors(env, decl.name);
   rejectDuplicates(decl.params, "type parameter");
   const info = freshTypeInfo(decl.name, decl.params.length);
   typeEnv.set(decl.name, info);
@@ -145,6 +151,12 @@ function inferTypeDecl(
     if (decl.exported) exports.set(c.name, scheme);
   }
   adts.set(info.id, { ...decl, type: info, paramTypeIds, ctorTypes });
+}
+
+function removeBasisConstructors(env: Env, typeName: string) {
+  for (const name of basisCtorNamesForType(typeName)) {
+    if (env.get(name)?.basis) env.delete(name);
+  }
 }
 
 function inferAliasDecl(

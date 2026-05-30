@@ -200,6 +200,20 @@ Deno.test("supports inferred JS module imports", async () => {
   expectBinding(result.env, "hash", { type: "Js.Value", vars: 0 });
 });
 
+Deno.test("maps reflected JS nullish returns to basis Option", async () => {
+  const result = await checkSource(`
+    from js.global("document") import { querySelector };
+    let found = querySelector("main");
+    let isMissing = match(found) {
+      Some(_) => { false },
+      None => { true },
+    };
+  `);
+
+  expectBinding(result.env, "found", { type: "Option<Js.Value>", vars: 0 });
+  expectBinding(result.env, "isMissing", { type: "Bool", vars: 0 });
+});
+
 Deno.test("resolves reflected JS optional arities before HM", async () => {
   const result = await checkSource(`
     from js.module("node:child_process") import { spawn };

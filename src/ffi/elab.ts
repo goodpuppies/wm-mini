@@ -176,7 +176,7 @@ function rewriteExprCalls(
       if (callee.kind === "Var") {
         const variants = bindings.get(callee.name)?.variants ?? [];
         const variant = variants.length > 1 || callee.name.includes(".")
-          ? variants.find((candidate) => typeCallArity(candidate.type) === args.length)
+          ? selectVariant(variants, args)
           : undefined;
         if (variant) {
           selected.add(variant.internalName);
@@ -270,6 +270,45 @@ function ffiInternalName(surfaceName: string, memberName: string, index: number)
 
 function typeCallArity(type: TypeExpr): number | undefined {
   return type.kind === "TFn" ? type.params.length : undefined;
+}
+
+function selectVariant(variants: FfiVariant[], args: Expr[]): FfiVariant | undefined {
+  return variants
+    .filter((candidate) => typeCallArity(candidate.type) === args.length)
+    .map((candidate) => ({ candidate, score: callScore(candidate.type, args) }))
+    .sort((left, right) => left.score - right.score)[0]?.candidate;
+}
+
+function callScore(type: TypeExpr, args: Expr[]): number {
+  if (type.kind !== "TFn") return Number.POSITIVE_INFINITY;
+  return type.params.reduce((score, param, index) => score + argScore(param, args[index]), 0);
+}
+
+function argScore(expected: TypeExpr, arg: Expr): number {
+  const actual = literalType(arg);
+  if (!actual) return 1;
+  if (expected.kind === "TName" && expected.name === actual) return 0;
+  if (expected.kind === "TName" && expected.name === "Js.Value") return 2;
+  return 10;
+}
+
+function literalType(expr: Expr): string | undefined {
+  switch (expr.kind) {
+    case "Int":
+    case "Float":
+      return "Number";
+    case "String":
+      return "String";
+    case "Bool":
+      return "Bool";
+    case "Void":
+      return "Void";
+    case "JsonObject":
+    case "JsonArray":
+      return "Js.Value";
+    default:
+      return undefined;
+  }
 }
 
 function dedupeTypeExprs(types: TypeExpr[]): TypeExpr[] {

@@ -1,5 +1,6 @@
 import type { AstNode } from "./source.ts";
 import type { CtorDecl, TypeExpr } from "./ast.ts";
+import { basisTypes } from "./basis.ts";
 
 export type Ty =
   | { tag: "var"; id: number; name?: string; instance?: Ty }
@@ -15,6 +16,7 @@ export type Scheme = {
   type: Ty;
   constraints?: Constraint[];
   status?: IdentifierStatus;
+  basis?: boolean;
   provenance?: TypeProvenanceNote[];
 };
 export type TypeProvenanceNote = {
@@ -29,6 +31,8 @@ export type TypeInfo = {
   id: number;
   name: string;
   arity: number;
+  basis?: boolean;
+  basisConstructors?: string[];
   alias?: Ty;
   aliasParams?: number[];
   recordFields?: RecordFieldInfo[];
@@ -273,7 +277,7 @@ export function show(t: Ty): string {
   return go(t);
 }
 
-export function baseEnv(): Env {
+export function baseEnv(typeEnv: TypeEnv = baseTypeEnv()): Env {
   const env: Env = new Map();
   const binaryNum = fn([tuple([NumberTy, NumberTy])], NumberTy);
   for (const op of ["+", "-", "*", "/", "%"]) env.set(op, { vars: [], type: binaryNum });
@@ -288,14 +292,58 @@ export function baseEnv(): Env {
   env.set("||", { vars: [], type: fn([tuple([BoolTy, BoolTy])], BoolTy) });
   const printable = fresh() as Extract<Ty, { tag: "var" }>;
   env.set("print", { vars: [printable.id], type: fn([printable], VoidTy) });
+  addBasisConstructors(env, typeEnv);
   return env;
 }
 
 export function baseTypeEnv(): TypeEnv {
-  return new Map(
+  const env = new Map(
     ["Number", "Bool", "String", "Void", "Js.Value"].map((name) => [
       name,
-      freshTypeInfo(name, 0),
+      { ...freshTypeInfo(name, 0), basis: true },
     ]),
   );
+  for (const type of basisTypes) {
+    env.set(type.name, {
+      ...freshTypeInfo(type.name, type.params.length),
+      basis: true,
+      basisConstructors: type.ctors.map((ctor) => ctor.name),
+    });
+  }
+  return env;
+}
+
+export function baseAdts(typeEnv: TypeEnv): Map<number, TypeDeclInfo> {
+  const adts = new Map<number, TypeDeclInfo>();
+  for (const type of basisTypes) {
+    const info = typeEnv.get(type.name);
+    if (!info) continue;
+    adts.set(info.id, {
+      type: info,
+      name: type.name,
+      params: type.params,
+      ctors: type.ctors.map((ctor) => ({ name: ctor.name, args: ctor.args })),
+    });
+  }
+  return adts;
+}
+
+function addBasisConstructors(env: Env, typeEnv: TypeEnv) {
+  for (const type of basisTypes) {
+    const info = typeEnv.get(type.name);
+    if (!info) continue;
+    const vars = new Map(type.params.map((name) => [name, fresh(name)] as const));
+    const result = named(info, type.params.map((name) => vars.get(name)!));
+    for (const ctor of type.ctors) {
+      const args = ctor.args.map((arg) =>
+        typeFromAst(arg, typeEnv, vars, { allowFreeVars: false })
+      );
+      const ctorType = args.length === 0 ? result : fn([callArg(args)], result);
+      env.set(ctor.name, {
+        ...generalize(new Map(), ctorType),
+        status: "constructor",
+        basis: true,
+      });
+    }
+  }
 }

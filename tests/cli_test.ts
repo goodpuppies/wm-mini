@@ -228,6 +228,28 @@ Deno.test("cli run prints nested ADT values by constructor shape", async () => {
   assertEquals(result.stderr, "");
 });
 
+Deno.test("cli run uses basis Option and Result constructors", async () => {
+  const dir = await Deno.makeTempDir();
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(
+    input,
+    `
+      let main = () => {
+        print(Some(1));
+        print(None);
+        print(Ok("yes"));
+        print(Err("no"))
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout, "Some(1)\nNone\nOk(yes)\nErr(no)\n");
+  assertEquals(result.stderr, "");
+});
+
 Deno.test("cli run calls typed JS namespace imports", async () => {
   const dir = await Deno.makeTempDir();
   const input = `${dir}/main.wm`;
@@ -338,6 +360,39 @@ Deno.test("cli run passes JSON arrays as one JS argument", async () => {
     result.stdout,
     'true\n{"stdio":["ignore","pipe","inherit"],"env":{"USER_AGENT":"Workman-FFI"}}\n',
   );
+  assertEquals(result.stderr, "");
+});
+
+Deno.test("cli run wraps and unwraps JS nullish Option values", async () => {
+  const dir = await Deno.makeTempDir();
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(
+    input,
+    `
+      from js.global("JSON") import { parse: (String) => Option<Js.Value> } as JSON;
+      from js.global("Object") import { is: (Option<Js.Value>, Js.Value) => Bool } as Object;
+      let main = () => {
+        let none = JSON.parse("null");
+        let some = JSON.parse("{\\"ok\\":true}");
+        let value = JSON{};
+        print(match(none) {
+          None => { "none" },
+          Some(_) => { "some" },
+        });
+        print(match(some) {
+          None => { "none" },
+          Some(_) => { "some" },
+        });
+        print(Object.is(Some(value), value));
+        print(Object.is(None, value))
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout, "none\nsome\ntrue\nfalse\n");
   assertEquals(result.stderr, "");
 });
 

@@ -2,6 +2,7 @@ import type { InferResult } from "../infer.ts";
 import type { ModuleGraph, ModuleImportEdge } from "../module_graph.ts";
 import type { Module, TypeExpr } from "../ast.ts";
 import type { ImportClause } from "../ast.ts";
+import { basisCtorId } from "../basis.ts";
 import type { CoreDecl, CoreExpr, CoreModule, CorePattern } from "./ast.ts";
 import { coreFromSurface } from "./from_surface.ts";
 import { type BindingId, CoreIdAllocator, type CtorId } from "./ids.ts";
@@ -81,7 +82,18 @@ export function coreProgramFromModule(
   const ids = new CoreIdAllocator();
   const module = coreFromSurface(surfaceModule);
   const constructors = attachConstructorIds(module, analysis, source, ids);
-  resolveConstructorRefs(module, new Map(constructors.map((ctor) => [ctor.name, ctor.id])));
+  resolveConstructorRefs(
+    module,
+    new Map([
+      ...basisConstructors(),
+      ...constructors.map((ctor) =>
+        [
+          ctor.name,
+          ctor.id,
+        ] as const
+      ),
+    ]),
+  );
   resolveValueRefs(module, ids);
   return {
     entry: source,
@@ -287,7 +299,7 @@ function visibleConstructors(
   artifact: CoreModuleArtifact,
   modules: Map<string, CoreModuleArtifact>,
 ): Map<string, CtorId> {
-  const env = new Map<string, CtorId>();
+  const env = new Map<string, CtorId>(basisConstructors());
   for (const edge of artifact.imports) {
     const imported = modules.get(edge.path);
     if (!imported) continue;
@@ -295,6 +307,13 @@ function visibleConstructors(
   }
   for (const ctor of artifact.constructors) env.set(ctor.name, ctor.id);
   return env;
+}
+
+function basisConstructors(): [string, CtorId][] {
+  return ["None", "Some", "Ok", "Err"].flatMap((name) => {
+    const id = basisCtorId(name);
+    return id === undefined ? [] : [[name, id as CtorId]];
+  });
 }
 
 function addImportedConstructors(

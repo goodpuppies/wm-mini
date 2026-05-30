@@ -1,6 +1,8 @@
 import type { CoreDecl, CoreExpr, CoreMatchArm, CorePattern } from "./ast.ts";
 import type { CoreDynamicExport, CoreModuleArtifact, CoreProgram } from "./artifact.ts";
 import type { BindingId } from "./ids.ts";
+import { basisCtorJsName, basisTypes } from "../basis.ts";
+import type { JsImportSpec, TypeExpr } from "../ast.ts";
 
 const reserved = new Set(["const", "let", "function", "return", "if", "else", "class", "void"]);
 
@@ -25,6 +27,14 @@ export function emitCoreProgram(program: CoreProgram): string {
   return typeof value === "function" ? value.bind(owner) : value;
 };`,
     `const __wm_js_call = (fn, arg) => __wm_is_tuple(arg) ? fn(...arg) : fn(arg);`,
+    `const __wm_js_option_wrap = (value) => value == null ? __wm_basis_None : __wm_basis_Some(value);`,
+    `const __wm_js_option_unwrap = (value) => value?.ctor === -1 ? undefined : value?.ctor === -2 ? value.args[0] : value;`,
+    `const __wm_js_apply = (fn, arg, converters, resultConverter) => {
+  const raw = converters.length === 0 ? [] : converters.length === 1 ? [arg] : (__wm_is_tuple(arg) ? Array.from(arg) : [arg]);
+  const args = raw.map((value, index) => converters[index] === "option" ? __wm_js_option_unwrap(value) : value);
+  const result = fn(...args);
+  return resultConverter === "option" ? __wm_js_option_wrap(result) : result;
+};`,
     `const __wm_eq = (a, b) => {
   if (a === b) return true;
   if (globalThis.Array.isArray(a) || globalThis.Array.isArray(b)) {
@@ -70,6 +80,7 @@ export function emitCoreProgram(program: CoreProgram): string {
 };`,
     "const print = (value) => console.log(__wm_show(value));",
     "const __wm_fail = (name, message) => { const e = new Error(message); e.name = name; throw e; };",
+    ...emitBasisConstructors(),
     "const __wm_op_add = ([a, b]) => a + b;",
     "const __wm_op_sub = (x) => __wm_is_tuple(x) ? x[0] - x[1] : -x;",
     "const __wm_op_mul = ([a, b]) => a * b;",
@@ -150,9 +161,12 @@ function emitDecl(decl: CoreDecl): string[] {
         ...prefix,
         `const ${id(alias)} = { ${
           decl.clause.specs.map((spec) =>
-            `${id(spec.alias ?? spec.name)}: (__arg) => __wm_js_call(${
-              jsMemberRef(target, JSON.stringify(spec.name))
-            }, __arg)`
+            `${id(spec.alias ?? spec.name)}: ${
+              jsImportWrapper(
+                jsMemberRef(target, JSON.stringify(spec.name)),
+                spec,
+              )
+            }`
           ).join(", ")
         } };`,
       ];
@@ -160,9 +174,9 @@ function emitDecl(decl: CoreDecl): string[] {
     return [
       ...prefix,
       ...decl.clause.specs.map((spec) =>
-        `const ${id(spec.alias ?? spec.name)} = (__arg) => __wm_js_call(${
-          jsMemberRef(target, JSON.stringify(spec.name))
-        }, __arg);`
+        `const ${id(spec.alias ?? spec.name)} = ${
+          jsImportWrapper(jsMemberRef(target, JSON.stringify(spec.name)), spec)
+        };`
       ),
     ];
   }
@@ -202,6 +216,38 @@ function emitDecl(decl: CoreDecl): string[] {
 
 let bindingTemp = 0;
 
+function jsImportWrapper(memberRef: string, spec: JsImportSpec): string {
+  return `(__arg) => __wm_js_apply(${memberRef}, __arg, ${
+    JSON.stringify(jsParamConverters(spec.type))
+  }, ${JSON.stringify(jsResultConverter(spec.type))})`;
+}
+
+function jsParamConverters(type: TypeExpr | undefined): string[] {
+  return type?.kind === "TFn" ? type.params.map(jsConverter) : [];
+}
+
+function jsResultConverter(type: TypeExpr | undefined): string {
+  return type?.kind === "TFn" ? jsConverter(type.result) : "id";
+}
+
+function jsConverter(type: TypeExpr): string {
+  return type.kind === "TName" && type.name === "Option" ? "option" : "id";
+}
+
+function emitBasisConstructors(): string[] {
+  return basisTypes.flatMap((type) =>
+    type.ctors.map((ctor) =>
+      ctor.args.length
+        ? `const ${basisCtorJsName(ctor.id)} = (__payload) => ({ ctor: ${
+          JSON.stringify(ctor.id)
+        }, name: ${JSON.stringify(ctor.name)}, args: [__payload] });`
+        : `const ${basisCtorJsName(ctor.id)} = Object.freeze({ ctor: ${
+          JSON.stringify(ctor.id)
+        }, name: ${JSON.stringify(ctor.name)}, args: [] });`
+    )
+  );
+}
+
 function emitExpr(expr: CoreExpr): string {
   switch (expr.kind) {
     case "CoreInt":
@@ -213,8 +259,13 @@ function emitExpr(expr: CoreExpr): string {
       return expr.value ? "true" : "false";
     case "CoreVoid":
       return "undefined";
-    case "CoreVar":
+    case "CoreVar": {
+      if (expr.bindingId === undefined && expr.ctorId !== undefined) {
+        const basisName = basisCtorJsName(expr.ctorId);
+        if (basisName) return basisName;
+      }
       return primitiveName(expr.name) ?? valueRefName(expr.name, expr.bindingId);
+    }
     case "CoreTuple":
       return `__wm_tuple(${expr.items.map(emitExpr).join(", ")})`;
     case "CoreRecord":
