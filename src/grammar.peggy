@@ -41,6 +41,9 @@
   function recordPatternField(name, pattern, loc) {
     return at({ name, pattern }, loc);
   }
+  function jsonField(key, value, loc) {
+    return at({ key, value }, loc);
+  }
 }
 
 Start = &{ nextNodeId = 0; return true; } _ decls:(_ d:TopDecl { return d; })* _ EOF { return mod(decls, location()); }
@@ -192,7 +195,18 @@ Postfix = head:Primary tail:(_ "(" _ args:ArgList? _ ")" { return args ?? []; })
   { return tail.reduce((callee, args) => at({ kind: "Call", callee, args }, location()), head); }
 
 Primary
-  = Float / Int / String / Bool / Void / RecordExpr / ListExpr / TupleOrGroup / Block / v:LongName { return at({ kind: "Var", name: v }, location()); }
+  = Float / Int / String / Bool / Void / JsonExpr / RecordExpr / ListExpr / TupleOrGroup / Block / v:LongName { return at({ kind: "Var", name: v }, location()); }
+
+JsonExpr
+  = "JSON" !IdentPart _ "{" _ fields:JsonObjectFieldList? _ "}"
+    { return at({ kind: "JsonObject", fields: fields ?? [] }, location()); }
+  / "JSON" !IdentPart _ "[" _ items:ArgList? _ "]"
+    { return at({ kind: "JsonArray", items: items ?? [] }, location()); }
+
+JsonObjectFieldList = first:JsonObjectField rest:(_ "," _ f:JsonObjectField { return f; })* _ ","? { return [first, ...rest]; }
+JsonObjectField
+  = key:Identifier _ ":" _ value:Expr { return jsonField(key, value, location()); }
+  / key:String _ ":" _ value:Expr { return jsonField(key.value, value, location()); }
 
 RecordExpr
   = "." _ "{" _ fields:RecordExprFieldList? _ "}"

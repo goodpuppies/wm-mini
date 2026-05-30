@@ -155,14 +155,14 @@ Initial wm-mini rule:
 
 ## Phase 7: JS Interop Design
 
-| Task                                            | Status  | Notes                                                                                                                            |
-| ----------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Implement value restriction prerequisite        | Partial | Conservative value restriction is in inference; JS calls are ordinary expansive function calls.                                  |
-| Design typed external binding declaration       | Partial | JS imports support inferred members, star namespace imports, aliases, and manual annotations.                                    |
-| Support direct JS global/member names           | Partial | Core/JS path supports `Math.floor(...)`, `console.log(...)`, and aliased locals like `jsmax(...)`.                               |
-| Define dynamic representation conversion rules  | Partial | Number/String/Bool/Void pass directly; tuple function arguments spread at the JS call boundary.                                  |
-| Reject or explicitly mark unsafe/raw boundaries | Gap     | Keep type holes out of ordinary code.                                                                                            |
-| Add no-bindgen smoke tests                      | Partial | `console.log`, `Math.max`, `Math.floor`, `Math.sqrt`, and `node:crypto/createHash` smoke tests exist; `Deno.readTextFile` later. |
+| Task                                            | Status  | Notes                                                                                                                                                                                                |
+| ----------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Implement value restriction prerequisite        | Partial | Conservative value restriction is in inference; JS calls are ordinary expansive function calls.                                                                                                      |
+| Design typed external binding declaration       | Partial | JS imports support inferred members, star namespace imports, aliases, and manual annotations; `src/ffi_elab.ts` resolves JS reflection before HM, and HM rejects raw unelaborated namespace imports. |
+| Support direct JS global/member names           | Partial | Core/JS path supports `Math.floor(...)`, `console.log(...)`, and aliased locals like `jsmax(...)`.                                                                                                   |
+| Define dynamic representation conversion rules  | Partial | Number/String/Bool/Void pass directly; tuple function arguments spread at the JS call boundary; `JSON{}`/`JSON[]` construct `Js.Value`.                                                              |
+| Reject or explicitly mark unsafe/raw boundaries | Gap     | Keep type holes out of ordinary code.                                                                                                                                                                |
+| Add no-bindgen smoke tests                      | Partial | `console.log`, `Math.max`, `Math.floor`, `Math.sqrt`, and `node:crypto/createHash` smoke tests exist; `Deno.readTextFile` later.                                                                     |
 
 ## Value Restriction Implementation Slice
 

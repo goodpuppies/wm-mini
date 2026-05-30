@@ -4,6 +4,7 @@ import type { TypeExpr } from "./ast.ts";
 export type JsMemberType = {
   name: string;
   type: TypeExpr;
+  overloads?: TypeExpr[];
 };
 
 const compilerOptions: ts.CompilerOptions = {
@@ -17,6 +18,7 @@ const compilerOptions: ts.CompilerOptions = {
 const memberCache = new Map<string, JsMemberType | undefined>();
 const namespaceCache = new Map<string, JsMemberType[]>();
 const nodeTypesPath = new URL(import.meta.resolve("npm:@types/node/index.d.ts")).pathname;
+const maxReflectedRestArity = 8;
 
 export function jsGlobalMembers(path: string): JsMemberType[] {
   const cached = namespaceCache.get(path);
@@ -30,8 +32,8 @@ export function jsGlobalMembers(path: string): JsMemberType[] {
       const members: JsMemberType[] = [];
       for (const symbol of checker.getTypeAtLocation(target).getProperties()) {
         const type = typeOfSymbol(checker, symbol);
-        const mapped = type ? typeExprFromTsType(checker, type) : undefined;
-        if (mapped?.kind === "TFn") members.push({ name: symbol.getName(), type: mapped });
+        const mapped = type ? jsMemberTypeFromTsType(checker, type) : undefined;
+        if (mapped?.type.kind === "TFn") members.push({ name: symbol.getName(), ...mapped });
       }
       return members;
     },
@@ -57,8 +59,8 @@ export function jsModuleMembers(specifier: string): JsMemberType[] {
       const members: JsMemberType[] = [];
       for (const symbol of checker.getTypeAtLocation(target).getProperties()) {
         const type = typeOfSymbol(checker, symbol);
-        const mapped = type ? typeExprFromTsType(checker, type) : undefined;
-        if (mapped?.kind === "TFn") members.push({ name: symbol.getName(), type: mapped });
+        const mapped = type ? jsMemberTypeFromTsType(checker, type) : undefined;
+        if (mapped?.type.kind === "TFn") members.push({ name: symbol.getName(), ...mapped });
       }
       return members;
     },
@@ -80,8 +82,8 @@ function jsTargetMember(target: JsReflectionSource, name: string): JsMemberType 
     (checker, sourceFile) => {
       const member = findVariable(sourceFile, "__wm_member")?.initializer;
       if (!member) return undefined;
-      const mapped = typeExprFromTsType(checker, checker.getTypeAtLocation(member));
-      return mapped ? { name, type: mapped } : undefined;
+      const mapped = jsMemberTypeFromTsType(checker, checker.getTypeAtLocation(member));
+      return mapped ? { name, ...mapped } : undefined;
     },
   );
   memberCache.set(key, reflected);
@@ -148,6 +150,20 @@ function typeOfSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Type | und
   return declaration ? checker.getTypeOfSymbolAtLocation(symbol, declaration) : undefined;
 }
 
+function jsMemberTypeFromTsType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): Omit<JsMemberType, "name"> | undefined {
+  const overloads = dedupeTypes(
+    type.getCallSignatures().flatMap((signature) => functionTypesFromSignature(checker, signature)),
+  );
+  if (overloads.length === 0) return undefined;
+  return {
+    type: overloads[0],
+    overloads: overloads.length > 1 ? overloads : undefined,
+  };
+}
+
 function typeExprFromTsType(checker: ts.TypeChecker, type: ts.Type): TypeExpr | undefined {
   const signature = type.getCallSignatures()[0];
   if (signature) return functionTypeFromSignature(checker, signature);
@@ -159,23 +175,93 @@ function typeExprFromTsType(checker: ts.TypeChecker, type: ts.Type): TypeExpr | 
 }
 
 function functionTypeFromSignature(checker: ts.TypeChecker, signature: ts.Signature): TypeExpr {
+  return functionTypesFromSignature(checker, signature)[0];
+}
+
+function functionTypesFromSignature(checker: ts.TypeChecker, signature: ts.Signature): TypeExpr[] {
   const declaration = signature.getDeclaration();
-  const parameters = signature.getParameters().flatMap((symbol, index) => {
-    const declarationParam = declaration?.parameters[index];
-    if (declarationParam?.questionToken || declarationParam?.initializer) return [];
-    const type = typeOfSymbol(checker, symbol) ?? checker.getAnyType();
-    if (declarationParam?.dotDotDotToken) {
-      const element = restElementType(checker, type) ?? checker.getAnyType();
-      if (isAnyOrUnknown(element)) return [varType("a")];
-      const mapped = typeExprFromTsType(checker, element) ?? name("Js.Value");
-      return [mapped, mapped];
-    }
-    const mapped = typeExprFromTsType(checker, type) ?? name("Js.Value");
-    return [mapped];
-  });
+  type ReflectedParam = { type: TypeExpr; optional: boolean; rest: boolean };
+  const parameters: ReflectedParam[] = signature
+    .getParameters()
+    .flatMap((symbol, index): ReflectedParam[] => {
+      const declarationParam = declaration?.parameters[index];
+      const type = typeOfSymbol(checker, symbol) ?? checker.getAnyType();
+      if (declarationParam?.dotDotDotToken) {
+        const element = restElementType(checker, type) ?? checker.getAnyType();
+        const mapped = paramTypeExpr(checker, element, index);
+        return [{ type: mapped, optional: false, rest: true }];
+      }
+      const mapped = paramTypeExpr(checker, type, index);
+      return [{
+        type: mapped,
+        optional: !!declarationParam?.questionToken || !!declarationParam?.initializer,
+        rest: false,
+      }];
+    });
   const result = typeExprFromTsType(checker, checker.getReturnTypeOfSignature(signature)) ??
     name("Js.Value");
-  return fn(parameters, result);
+  const restIndex = parameters.findIndex((param) => param.rest);
+  if (restIndex !== -1) {
+    const fixed = parameters.slice(0, restIndex);
+    const required = lastRequiredParameter(fixed) + 1;
+    const overloads: TypeExpr[] = [];
+    for (let count = required; count <= maxReflectedRestArity; count++) {
+      const params: TypeExpr[] = [];
+      for (let index = 0; index < Math.min(count, fixed.length); index++) {
+        params.push(fixed[index].type);
+      }
+      for (let index = params.length; index < count; index++) {
+        params.push(restSlotType(parameters[restIndex].type, index));
+      }
+      overloads.push(fn(params, result));
+    }
+    return overloads;
+  }
+  const required = lastRequiredParameter(parameters) + 1;
+  const overloads: TypeExpr[] = [];
+  for (let count = required; count <= parameters.length; count++) {
+    overloads.push(fn(parameters.slice(0, count).map((param) => param.type), result));
+  }
+  return overloads.length ? overloads : [fn([], result)];
+}
+
+function paramTypeExpr(checker: ts.TypeChecker, type: ts.Type, index: number): TypeExpr {
+  if (isAnyOrUnknown(type)) return varType(`a${index}`);
+  return typeExprFromTsType(checker, type) ?? name("Js.Value");
+}
+
+function restSlotType(type: TypeExpr, index: number): TypeExpr {
+  return type.kind === "TVar" ? varType(`a${index}`) : type;
+}
+
+function lastRequiredParameter(parameters: { optional: boolean }[]): number {
+  for (let i = parameters.length - 1; i >= 0; i--) {
+    if (!parameters[i].optional) return i;
+  }
+  return -1;
+}
+
+function dedupeTypes(types: TypeExpr[]): TypeExpr[] {
+  const seen = new Set<string>();
+  return types.filter((type) => {
+    const key = typeKey(type);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function typeKey(type: TypeExpr): string {
+  switch (type.kind) {
+    case "TName":
+      return `${type.name}<${type.args.map(typeKey).join(",")}>`;
+    case "TVar":
+      return `'${type.name}`;
+    case "TTuple":
+      return `(${type.items.map(typeKey).join(",")})`;
+    case "TFn":
+      return `(${type.params.map(typeKey).join(",")})->${typeKey(type.result)}`;
+  }
 }
 
 function restElementType(checker: ts.TypeChecker, type: ts.Type): ts.Type | undefined {

@@ -40,6 +40,8 @@ import {
   warnRedundantMatchArms,
 } from "./infer/decl_helpers.ts";
 import { addAdts, addImport } from "./infer/imports.ts";
+import { addJsImport } from "./infer/js_imports.ts";
+import { assertJsonCompatible, jsonValueTy } from "./infer/json.ts";
 import {
   inferBindingPattern,
   inferPattern,
@@ -54,7 +56,6 @@ import {
 } from "./infer/module_exports.ts";
 import { inferDottedVar, inferRecordExpr } from "./infer/records.ts";
 import { snapshotEnv, type TypeSnapshot } from "./infer/snapshots.ts";
-import { jsGlobalMember, jsGlobalMembers, jsModuleMember, jsModuleMembers } from "./js_types.ts";
 import { callArg, constrain } from "./infer/shared.ts";
 
 export type StructureEnv = { values: Env; types: TypeEnv; adts: Map<number, TypeDeclInfo> };
@@ -187,30 +188,7 @@ function inferDecl(
 ) {
   if (decl.kind === "ImportDecl") return;
   if (decl.kind === "JsImportDecl") {
-    if (decl.clause.kind === "Namespace") {
-      for (const member of jsTargetMembers(decl.target)) {
-        const local = `${decl.clause.alias}.${member.name}`;
-        if (env.has(local)) throw new Error(`duplicate value import ${local}`);
-        const type = typeFromAst(member.type, typeEnv, new Map(), { allowFreeVars: true });
-        env.set(local, { ...generalize(env, type), status: "value" });
-      }
-      return;
-    }
-    rejectDuplicates(decl.clause.specs.map((spec) => spec.alias ?? spec.name), "JS import");
-    for (const spec of decl.clause.specs) {
-      const name = spec.alias ?? spec.name;
-      const local = decl.clause.alias ? `${decl.clause.alias}.${name}` : name;
-      if (env.has(local)) throw new Error(`duplicate value import ${local}`);
-      const resolved = spec.type ?? jsTargetMember(decl.target, spec.name)?.type;
-      if (!resolved) {
-        throw new Error(`unknown JS import ${jsTargetLabel(decl.target)}.${spec.name}`);
-      }
-      const type = typeFromAst(resolved, typeEnv, new Map(), { allowFreeVars: !spec.type });
-      const scheme = spec.type
-        ? { vars: [], type, constraints: [], status: "value" as const }
-        : { ...generalize(env, type), status: "value" as const };
-      env.set(local, scheme);
-    }
+    addJsImport(env, typeEnv, decl);
     return;
   }
   if (decl.kind === "RecordDecl") {
@@ -365,22 +343,6 @@ function inferDecl(
   });
 }
 
-function jsTargetMembers(target: Extract<Decl, { kind: "JsImportDecl" }>["target"]) {
-  return target.kind === "JsGlobal"
-    ? jsGlobalMembers(target.path)
-    : jsModuleMembers(target.specifier);
-}
-
-function jsTargetMember(target: Extract<Decl, { kind: "JsImportDecl" }>["target"], name: string) {
-  return target.kind === "JsGlobal"
-    ? jsGlobalMember(target.path, name)
-    : jsModuleMember(target.specifier, name);
-}
-
-function jsTargetLabel(target: Extract<Decl, { kind: "JsImportDecl" }>["target"]): string {
-  return target.kind === "JsGlobal" ? target.path : target.specifier;
-}
-
 function generalizeBinding(
   env: Env,
   type: Ty,
@@ -405,6 +367,9 @@ function isNonExpansive(expr: Expr, env: Env): boolean {
       return expr.items.every((item) => isNonExpansive(item, env));
     case "Record":
       return expr.fields.every((field) => isNonExpansive(field.value, env));
+    case "JsonObject":
+    case "JsonArray":
+      return false;
     case "Call":
       return isConstructorExpr(expr.callee, env) &&
         expr.args.every((arg) => isNonExpansive(arg, env));
@@ -628,6 +593,12 @@ function recursiveResultEvidence(
       case "Record":
         node.fields.forEach((field) => visit(field.value));
         break;
+      case "JsonObject":
+        node.fields.forEach((field) => visit(field.value));
+        break;
+      case "JsonArray":
+        node.items.forEach(visit);
+        break;
       case "Lambda":
         visit(node.body);
         break;
@@ -684,6 +655,12 @@ function expressionTypeEvidence(
         break;
       case "Record":
         node.fields.forEach((field) => visit(field.value));
+        break;
+      case "JsonObject":
+        node.fields.forEach((field) => visit(field.value));
+        break;
+      case "JsonArray":
+        node.items.forEach(visit);
         break;
       case "Lambda":
         visit(node.body);
@@ -785,6 +762,38 @@ function inferExprInner(
         (value) => inferExpr(value, env, typeEnv, adts, types, warnings, diagnostics, provenance),
       );
       break;
+    case "JsonObject":
+      for (const field of expr.fields) {
+        const valueType = inferExpr(
+          field.value,
+          env,
+          typeEnv,
+          adts,
+          types,
+          warnings,
+          diagnostics,
+          provenance,
+        );
+        assertJsonCompatible(valueType, typeEnv, field.value);
+      }
+      t = jsonValueTy(typeEnv);
+      break;
+    case "JsonArray":
+      for (const item of expr.items) {
+        const itemType = inferExpr(
+          item,
+          env,
+          typeEnv,
+          adts,
+          types,
+          warnings,
+          diagnostics,
+          provenance,
+        );
+        assertJsonCompatible(itemType, typeEnv, item);
+      }
+      t = jsonValueTy(typeEnv);
+      break;
     case "Lambda": {
       const local = new Map(env);
       const annotationVars: TypeVarScope = new Map();
@@ -821,12 +830,13 @@ function inferExprInner(
       const calleeFn = prune(callee);
       if (calleeFn.tag === "fn" && calleeFn.params.length === 1) {
         const argExpr = expr.args.length === 1 ? expr.args[0] : expr;
+        const calleeRelated = callCalleeRelated(expr.callee, calleeFn);
         constrainAt(
           calleeFn.params[0],
           arg,
           argExpr,
-          undefined,
-          calleeProvenance,
+          () => `type mismatch expected ${quoteType(calleeFn.params[0])}, got ${quoteType(arg)}`,
+          [...calleeRelated, ...calleeProvenance],
           provenance,
           {
             message: "call argument",
@@ -841,8 +851,8 @@ function inferExprInner(
           callee,
           fn([arg], result),
           expr,
-          undefined,
-          calleeProvenance,
+          () => `type mismatch expected ${quoteType(fn([arg], result))}, got ${quoteType(callee)}`,
+          [...callCalleeRelated(expr.callee, callee), ...calleeProvenance],
           provenance,
           {
             message: "call argument",
@@ -971,6 +981,17 @@ function inferExprInner(
   }
   types.set(expr, t);
   return t;
+}
+
+function callCalleeRelated(callee: Expr, type: Ty): FrontendRelatedDiagnostic[] {
+  if (!callee.node) return [];
+  return [{
+    message: callee.kind === "Var"
+      ? `callee ${callee.name}: ${show(type)}`
+      : `callee: ${show(type)}`,
+    node: callee.node,
+    span: callee.node.span,
+  }];
 }
 
 function inferParam(

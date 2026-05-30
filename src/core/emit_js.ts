@@ -9,7 +9,9 @@ export function emitCoreProgram(program: CoreProgram): string {
   const main = mainRef(entry);
   return [
     '"use strict";',
-    "const __wm_tuple = (...items) => items;",
+    "const __wm_tuple_tag = Symbol('wm.tuple');",
+    "const __wm_tuple = (...items) => Object.assign(items, { [__wm_tuple_tag]: true });",
+    "const __wm_is_tuple = (value) => globalThis.Array.isArray(value) && value[__wm_tuple_tag] === true;",
     `const __wm_js_global = (path) => path.split(".").reduce((value, key) => value?.[key], globalThis);`,
     `const __wm_js_member = (path) => {
   const parts = path.split(".");
@@ -22,11 +24,11 @@ export function emitCoreProgram(program: CoreProgram): string {
   const value = owner?.[key];
   return typeof value === "function" ? value.bind(owner) : value;
 };`,
-    `const __wm_js_call = (fn, arg) => Array.isArray(arg) ? fn(...arg) : fn(arg);`,
+    `const __wm_js_call = (fn, arg) => __wm_is_tuple(arg) ? fn(...arg) : fn(arg);`,
     `const __wm_eq = (a, b) => {
   if (a === b) return true;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    return Array.isArray(a) && Array.isArray(b) && a.length === b.length &&
+  if (globalThis.Array.isArray(a) || globalThis.Array.isArray(b)) {
+    return globalThis.Array.isArray(a) && globalThis.Array.isArray(b) && a.length === b.length &&
       a.every((item, index) => __wm_eq(item, b[index]));
   }
   if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
@@ -49,15 +51,17 @@ export function emitCoreProgram(program: CoreProgram): string {
   if (seen.has(value)) return "<cycle>";
   seen.add(value);
   let shown;
-  if (Array.isArray(value)) {
+  if (__wm_is_tuple(value)) {
     shown = "(" + value.map((item) => __wm_show(item, seen)).join(", ") + ")";
   } else if ("ctor" in value) {
     shown = value.args.length === 0
       ? value.name
       : value.name + "(" + value.args.map((item) => {
-        if (Array.isArray(item)) return item.map((part) => __wm_show(part, seen)).join(", ");
+        if (__wm_is_tuple(item)) return item.map((part) => __wm_show(part, seen)).join(", ");
         return __wm_show(item, seen);
       }).join(", ") + ")";
+  } else if (globalThis.Array.isArray(value)) {
+    shown = "[" + value.map((item) => __wm_show(item, seen)).join(", ") + "]";
   } else {
     shown = "{ " + Object.keys(value).sort().map((key) => key + " = " + __wm_show(value[key], seen)).join(", ") + " }";
   }
@@ -67,7 +71,7 @@ export function emitCoreProgram(program: CoreProgram): string {
     "const print = (value) => console.log(__wm_show(value));",
     "const __wm_fail = (name, message) => { const e = new Error(message); e.name = name; throw e; };",
     "const __wm_op_add = ([a, b]) => a + b;",
-    "const __wm_op_sub = (x) => Array.isArray(x) ? x[0] - x[1] : -x;",
+    "const __wm_op_sub = (x) => __wm_is_tuple(x) ? x[0] - x[1] : -x;",
     "const __wm_op_mul = ([a, b]) => a * b;",
     "const __wm_op_div = ([a, b]) => a / b;",
     "const __wm_op_mod = ([a, b]) => a % b;",
@@ -217,6 +221,14 @@ function emitExpr(expr: CoreExpr): string {
       return `{ ${
         expr.fields.map((field) => `${id(field.name)}: ${emitExpr(field.value)}`).join(", ")
       } }`;
+    case "CoreJsonObject":
+      return `{ ${
+        expr.fields.map((field) => `${JSON.stringify(field.key)}: ${emitExpr(field.value)}`).join(
+          ", ",
+        )
+      } }`;
+    case "CoreJsonArray":
+      return `[${expr.items.map(emitExpr).join(", ")}]`;
     case "CoreFn":
       return `(__arg) => {\n${
         emitArmBody(expr.arms, "__arg", "pattern match failure in function")
@@ -315,7 +327,7 @@ function patternChecks(pattern: CorePattern, value: string): string[] {
       return [`__wm_eq(${value}, ${valueRefName(pattern.name, pattern.bindingId)})`];
     case "CorePTuple":
       return [
-        `Array.isArray(${value})`,
+        `__wm_is_tuple(${value})`,
         `${value}.length === ${pattern.items.length}`,
         ...pattern.items.flatMap((item, index) => patternChecks(item, `${value}[${index}]`)),
       ];

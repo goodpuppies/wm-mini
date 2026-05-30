@@ -169,6 +169,12 @@ function resolveExprValues(expr: CoreExpr, env: ValueEnv, ids: CoreIdAllocator) 
     case "CoreRecord":
       expr.fields.forEach((field) => resolveExprValues(field.value, env, ids));
       return;
+    case "CoreJsonObject":
+      expr.fields.forEach((field) => resolveExprValues(field.value, env, ids));
+      return;
+    case "CoreJsonArray":
+      expr.items.forEach((item) => resolveExprValues(item, env, ids));
+      return;
     case "CoreFn":
       expr.arms.forEach((arm) => {
         resolvePatternRefs(arm.pattern, env, ids);
@@ -335,6 +341,12 @@ function resolveExprConstructors(expr: CoreExpr, env: Map<string, CtorId>) {
       return;
     case "CoreRecord":
       expr.fields.forEach((field) => resolveExprConstructors(field.value, env));
+      return;
+    case "CoreJsonObject":
+      expr.fields.forEach((field) => resolveExprConstructors(field.value, env));
+      return;
+    case "CoreJsonArray":
+      expr.items.forEach((item) => resolveExprConstructors(item, env));
       return;
     case "CoreFn":
       expr.arms.forEach((arm) => {

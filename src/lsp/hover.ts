@@ -121,6 +121,10 @@ function collectExpr(expr: Expr): Target[] {
       return [...own, ...expr.items.flatMap(collectExpr)];
     case "Record":
       return [...own, ...expr.fields.flatMap(collectRecordExprField)];
+    case "JsonObject":
+      return [...own, ...expr.fields.flatMap(collectJsonObjectField)];
+    case "JsonArray":
+      return [...own, ...expr.items.flatMap(collectExpr)];
     case "Lambda":
       return [...own, ...expr.params.flatMap(collectParam), ...collectExpr(expr.body)];
     case "Call":
@@ -155,6 +159,10 @@ function collectExpr(expr: Expr): Target[] {
 }
 
 function collectRecordExprField(field: RecordExprField): Target[] {
+  return collectExpr(field.value);
+}
+
+function collectJsonObjectField(field: { value: Expr }): Target[] {
   return collectExpr(field.value);
 }
 

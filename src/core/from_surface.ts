@@ -3,6 +3,7 @@ import type {
   CtorDecl,
   Decl,
   Expr,
+  JsonObjectField,
   MatchArm,
   Module,
   Param,
@@ -16,6 +17,7 @@ import type {
   CoreCtorDecl,
   CoreDecl,
   CoreExpr,
+  CoreJsonObjectField,
   CoreMatchArm,
   CoreModule,
   CorePattern,
@@ -112,6 +114,18 @@ function coreExprFromSurface(expr: Expr): CoreExpr {
         fields: expr.fields.map(coreRecordExprFieldFromSurface),
         node: expr.node,
       };
+    case "JsonObject":
+      return {
+        kind: "CoreJsonObject",
+        fields: expr.fields.map(coreJsonObjectFieldFromSurface),
+        node: expr.node,
+      };
+    case "JsonArray":
+      return {
+        kind: "CoreJsonArray",
+        items: expr.items.map(coreExprFromSurface),
+        node: expr.node,
+      };
     case "Lambda":
       return {
         kind: "CoreFn",
@@ -192,6 +206,10 @@ function coreCallArg(args: Expr[], node: Expr["node"]): CoreExpr {
 
 function coreRecordExprFieldFromSurface(field: RecordExprField): CoreRecordExprField {
   return { name: field.name, value: coreExprFromSurface(field.value), node: field.node };
+}
+
+function coreJsonObjectFieldFromSurface(field: JsonObjectField): CoreJsonObjectField {
+  return { key: field.key, value: coreExprFromSurface(field.value), node: field.node };
 }
 
 function coreMatchArmFromSurface(arm: MatchArm): CoreMatchArm {

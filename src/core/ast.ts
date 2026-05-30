@@ -70,6 +70,8 @@ export type CoreExpr =
   | { kind: "CoreVar"; name: string; bindingId?: BindingId; ctorId?: CtorId; node?: AstNode }
   | { kind: "CoreTuple"; items: CoreExpr[]; node?: AstNode }
   | { kind: "CoreRecord"; fields: CoreRecordExprField[]; node?: AstNode }
+  | { kind: "CoreJsonObject"; fields: CoreJsonObjectField[]; node?: AstNode }
+  | { kind: "CoreJsonArray"; items: CoreExpr[]; node?: AstNode }
   | { kind: "CoreFn"; arms: CoreMatchArm[]; node?: AstNode }
   | { kind: "CoreApp"; callee: CoreExpr; arg: CoreExpr; node?: AstNode }
   | { kind: "CoreIf"; cond: CoreExpr; thenExpr: CoreExpr; elseExpr: CoreExpr; node?: AstNode }
@@ -78,6 +80,12 @@ export type CoreExpr =
 
 export type CoreRecordExprField = {
   name: string;
+  value: CoreExpr;
+  node?: AstNode;
+};
+
+export type CoreJsonObjectField = {
+  key: string;
   value: CoreExpr;
   node?: AstNode;
 };

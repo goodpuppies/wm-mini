@@ -313,6 +313,34 @@ Deno.test("cli run calls inferred JS module imports", async () => {
   assertEquals(result.stderr, "");
 });
 
+Deno.test("cli run passes JSON arrays as one JS argument", async () => {
+  const dir = await Deno.makeTempDir();
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(
+    input,
+    `
+      from js.global("Array") import { isArray: (Js.Value) => Bool } as Array;
+      from js.global("JSON") import { stringify: (Js.Value) => String } as JSON;
+      let main = () => {
+        print(Array.isArray(JSON[1, 2]));
+        print(JSON.stringify(JSON{
+          stdio: JSON["ignore", "pipe", "inherit"],
+          env: JSON{ "USER_AGENT": "Workman-FFI" }
+        }))
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(
+    result.stdout,
+    'true\n{"stdio":["ignore","pipe","inherit"],"env":{"USER_AGENT":"Workman-FFI"}}\n',
+  );
+  assertEquals(result.stderr, "");
+});
+
 async function runCli(args: string[]) {
   const result = await new Deno.Command(Deno.execPath(), {
     args: ["run", "--allow-read", "--allow-write", "--allow-run", "--allow-env", cli, ...args],

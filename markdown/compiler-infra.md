@@ -289,6 +289,22 @@ switchCtor value
 
 JavaScript interop should attach after elaboration, not at parse time.
 
+All JS-specific reflection and overload-like behavior should live in a pre-HM FFI elaboration pass.
+That pass is represented by `src/ffi_elab.ts`. Its job is to turn surface JS imports into a
+restricted table of foreign alternatives and, eventually, rewrite resolved uses into ordinary typed
+internal bindings before the main HM checker sees them. HM should not learn about JavaScript
+optional parameters, varargs, or overload sets directly.
+
+Current hygiene rule:
+
+- `src/ffi_elab.ts` may use TypeScript reflection and resolve JS overload/rest/optional arities.
+- `src/infer.ts` must not import JS reflection or choose overloads.
+- `src/infer/js_imports.ts` accepts only already-typed JS import specs. Raw reflected namespace
+  imports are rejected as unelaborated input.
+- Reflected overload sets are not Workman values. A call can elaborate to one concrete internal
+  foreign binding; a bare overloaded import remains unavailable unless a later annotation-selection
+  rule is added.
+
 The first version should prefer reflection-backed typed namespace imports over bindgen:
 
 ```txt
@@ -309,6 +325,24 @@ when overload selection needs help:
 from js.global("console") import { log: (String, Number) => Void } as console;
 from js.global("Deno") import { readTextFile: (String) => Js.Promise<String> } as Deno;
 ```
+
+Raw JavaScript object and array values must be marked explicitly with JSON literals:
+
+```txt
+spawn("curl", JSON["-s", url], JSON{
+  stdio: JSON["ignore", "pipe", "inherit"],
+  env: JSON{ "USER_AGENT": "Workman-FFI" },
+})
+```
+
+`JSON{}` and `JSON[]` elaborate to `Js.Value`. Workman records remain nominal ML records, and
+Workman list syntax remains the algebraic list model; neither silently turns into a JavaScript
+object or array at an FFI boundary.
+
+`JSON{}` and `JSON[]` are intentionally FFI-surface constructs, not an SML core feature. Their
+typing rule is isolated in `src/infer/json.ts`: primitive ML values and existing `Js.Value`s may be
+embedded, while ordinary ML records, lists, and ADTs are rejected unless an explicit conversion
+exists later.
 
 No JS interop design should require learning a fake replacement API for ordinary JS objects.
 

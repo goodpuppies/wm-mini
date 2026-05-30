@@ -144,11 +144,46 @@ let bad = sumList(Cons(1, Empty));
   assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
   assertEquals(
     diagnostics?.[0].message,
-    'type mismatch "(Int_list, Number)" vs "Int_list"',
+    'type mismatch expected "(Int_list, Number)", got "Int_list"',
   );
   assertEquals(diagnostics?.[0].range.start, {
     line: 10,
     character: 2,
+  });
+});
+
+Deno.test("lsp validation explains call argument expected and callee types", async () => {
+  const dir = await Deno.makeTempDir();
+  const main = `${dir}/main.wm`;
+  const source = `
+from js.global("Math") import { floor };
+
+let bad = floor(1, 2);
+`;
+  await Deno.writeTextFile(main, source);
+
+  const diagnostics = await diagnosticsForPath(
+    await validateUri(pathToFileUri(main), new Map()),
+    main,
+  );
+  assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
+  assertEquals(
+    diagnostics?.[0].message,
+    'type mismatch expected "Number", got "(Number, Number)"',
+  );
+  assertEquals(diagnostics?.[0].range.start, { line: 3, character: 10 });
+  assertEquals(diagnostics?.[0].range.end, { line: 3, character: 21 });
+  assertEquals(
+    diagnostics?.[0].relatedInformation?.[0].message,
+    "callee floor: (Number) => Number",
+  );
+  assertEquals(diagnostics?.[0].relatedInformation?.[0].location.range.start, {
+    line: 3,
+    character: 10,
+  });
+  assertEquals(diagnostics?.[0].relatedInformation?.[0].location.range.end, {
+    line: 3,
+    character: 15,
   });
 });
 

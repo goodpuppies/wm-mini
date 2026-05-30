@@ -54,6 +54,7 @@ Supported expressions:
 - tuples
 - list literals such as `[]`, `[a, b, c]`, and `[head, ..tail]`
 - nominal record construction and field access
+- explicit JS FFI values with `JSON{ key: value }` and `JSON[items]`
 - blocks with local declarations
 - `if (cond) { then } else { else }`
 - `match(value) { pattern => { body }, ... }`

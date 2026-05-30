@@ -39,6 +39,10 @@ export function hasUnguardedRecursiveRef(
       return expr.items.some((item) => hasUnguardedRecursiveRef(item, names, guarded));
     case "Record":
       return expr.fields.some((field) => hasUnguardedRecursiveRef(field.value, names, guarded));
+    case "JsonObject":
+      return expr.fields.some((field) => hasUnguardedRecursiveRef(field.value, names, guarded));
+    case "JsonArray":
+      return expr.items.some((item) => hasUnguardedRecursiveRef(item, names, guarded));
     case "Lambda":
       return hasUnguardedRecursiveRef(expr.body, names, true);
     case "Call":

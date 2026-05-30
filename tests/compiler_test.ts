@@ -161,7 +161,6 @@ Deno.test("supports typed JS namespace imports", async () => {
     };
   `);
 
-  expectBinding(result.env, "console.log", { type: "((String, Number)) => Void", vars: 0 });
   expectBinding(result.env, "main", { type: "(Void) => Void", vars: 0 });
 });
 
@@ -174,9 +173,7 @@ Deno.test("supports inferred JS named and namespace imports", async () => {
     let rooted = Math.sqrt(9);
   `);
 
-  expectBinding(result.env, "jsmax", { type: "((Number, Number)) => Number", vars: 0 });
   expectBinding(result.env, "floor", { type: "(Number) => Number", vars: 0 });
-  expectBinding(result.env, "Math.sqrt", { type: "(Number) => Number", vars: 0 });
   expectBinding(result.env, "bigger", { type: "Number", vars: 0 });
   expectBinding(result.env, "rounded", { type: "Number", vars: 0 });
   expectBinding(result.env, "rooted", { type: "Number", vars: 0 });
@@ -191,7 +188,6 @@ Deno.test("supports inferred variadic JS imports as polymorphic unary functions"
     };
   `);
 
-  expectBinding(result.env, "console.log", { type: "(a) => Void", vars: 1 });
   expectBinding(result.env, "main", { type: "(Void) => Void", vars: 0 });
 });
 
@@ -201,8 +197,66 @@ Deno.test("supports inferred JS module imports", async () => {
     let hash = createHash("sha256");
   `);
 
-  expectBinding(result.env, "createHash", { type: "(String) => Js.Value", vars: 0 });
   expectBinding(result.env, "hash", { type: "Js.Value", vars: 0 });
+});
+
+Deno.test("resolves reflected JS optional arities before HM", async () => {
+  const result = await checkSource(`
+    from js.module("node:child_process") import { spawn };
+    let p1 = spawn("cmd");
+    let p2 = spawn("cmd", JSON[]);
+    let p3 = spawn("cmd", JSON[], JSON{});
+  `);
+
+  expectBinding(result.env, "p1", { type: "Js.Value", vars: 0 });
+  expectBinding(result.env, "p2", { type: "Js.Value", vars: 0 });
+  expectBinding(result.env, "p3", { type: "Js.Value", vars: 0 });
+});
+
+Deno.test("reflected JS overload sets are not bare HM values", async () => {
+  await assertRejects(
+    () =>
+      checkSource(`
+        from js.module("node:child_process") import { spawn };
+        let f = spawn;
+      `),
+    Error,
+    "unknown name spawn",
+  );
+});
+
+Deno.test("supports JSON literals as explicit JS values", async () => {
+  const result = await checkSource(`
+    from js.module("node:child_process") import {
+      spawn: (String, Js.Value, Js.Value) => Js.Value
+    };
+    let proc = spawn(
+      "curl",
+      JSON["-s", "https://api.github.com/repos/denoland/deno"],
+      JSON{
+        stdio: JSON["ignore", "pipe", "inherit"],
+        env: JSON{ "USER_AGENT": "Workman-FFI" }
+      }
+    );
+  `);
+
+  expectBinding(result.env, "spawn", {
+    type: "((String, Js.Value, Js.Value)) => Js.Value",
+    vars: 0,
+  });
+  expectBinding(result.env, "proc", { type: "Js.Value", vars: 0 });
+});
+
+Deno.test("JSON literals reject ordinary ML values at the JS boundary", async () => {
+  await assertRejects(
+    () =>
+      checkSource(`
+        type Int_list = Empty | Cons<Number, Int_list>;
+        let bad = JSON{ xs: Cons(1, Empty) };
+      `),
+    Error,
+    'type mismatch "Int_list" vs "Js.Value"',
+  );
 });
 
 Deno.test("named imports reject missing members", async () => {

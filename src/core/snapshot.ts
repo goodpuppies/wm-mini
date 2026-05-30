@@ -72,6 +72,14 @@ function showExpr(expr: CoreExpr): string {
       return `.{${
         expr.fields.map((field) => `${field.name} = ${showExpr(field.value)}`).join(", ")
       }}`;
+    case "CoreJsonObject":
+      return `JSON{${
+        expr.fields.map((field) => `${JSON.stringify(field.key)}: ${showExpr(field.value)}`).join(
+          ", ",
+        )
+      }}`;
+    case "CoreJsonArray":
+      return `JSON[${expr.items.map(showExpr).join(", ")}]`;
     case "CoreFn":
       return `fn { ${
         expr.arms.map((arm) => `${showPattern(arm.pattern)} => ${showExpr(arm.body)}`).join(" | ")

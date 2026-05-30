@@ -6,6 +6,7 @@ import {
 } from "./core/artifact.ts";
 import { emitCoreProgram } from "./core/emit_js.ts";
 import { coreFromSurface } from "./core/from_surface.ts";
+import { prepareFfiElaboration } from "./ffi_elab.ts";
 import { inferModule, inferModuleWithSteps, type InferResult, type InferStep } from "./infer.ts";
 import { loadModuleGraph, type ModuleGraph, type ModuleGraphOptions } from "./module_graph.ts";
 import { parse, type Surface } from "./parser.ts";
@@ -13,7 +14,7 @@ import { parse, type Surface } from "./parser.ts";
 export type CompileOptions = ModuleGraphOptions;
 
 export async function compile(source: string, options: CompileOptions = {}): Promise<string> {
-  const ast = await parse(source, options.surface);
+  const ast = prepareFfiElaboration(await parse(source, options.surface)).module;
   const result = checkModuleWithoutImports(ast);
   return emitCoreProgram(coreProgramFromModule(ast, result));
 }
@@ -44,14 +45,16 @@ export async function checkSource(
   source: string,
   options: CheckSourceOptions = {},
 ): Promise<InferResult> {
-  return checkModuleWithoutImports(await parse(source, options.surface));
+  return checkModuleWithoutImports(
+    prepareFfiElaboration(await parse(source, options.surface)).module,
+  );
 }
 
 export async function coreSource(
   source: string,
   options: CheckSourceOptions = {},
 ): Promise<CoreSourceResult> {
-  const module = await parse(source, options.surface);
+  const module = prepareFfiElaboration(await parse(source, options.surface)).module;
   return { module: coreFromSurface(module), result: checkModuleWithoutImports(module) };
 }
 
@@ -59,7 +62,7 @@ export async function checkSourceSteps(
   source: string,
   options: CheckSourceOptions = {},
 ): Promise<InferStep[]> {
-  const module = await parse(source, options.surface);
+  const module = prepareFfiElaboration(await parse(source, options.surface)).module;
   if (module.decls.some((decl) => decl.kind === "ImportDecl")) {
     throw new Error("source strings with imports require checkFile");
   }
@@ -87,6 +90,9 @@ export async function analyzeFile(
   options: ModuleGraphOptions = {},
 ): Promise<{ graph: ModuleGraph; results: Map<string, InferResult> }> {
   const graph = await loadModuleGraph(input, options);
+  for (const node of graph.nodes.values()) {
+    node.module = prepareFfiElaboration(node.module).module;
+  }
   const results = new Map<string, InferResult>();
   for (const path of graph.order) {
     const node = graph.nodes.get(path)!;
