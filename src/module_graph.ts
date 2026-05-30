@@ -3,9 +3,12 @@ import type { ImportClause, Module } from "./ast.ts";
 import { diagnosticError } from "./diagnostics.ts";
 import { parse, type Surface } from "./parser.ts";
 
+export type VirtualFileSystem = Map<string, string>;
+
 export type ModuleGraphOptions = {
   surface?: Surface;
   sourceOverrides?: Map<string, string>;
+  virtualFs?: VirtualFileSystem;
 };
 
 export type ModuleImportEdge = {
@@ -78,7 +81,7 @@ async function visitModule(path: string, ctx: LoadContext) {
     if (decl.kind !== "ImportDecl") continue;
     let child: string;
     try {
-      child = await resolveImportPath(path, decl.path);
+      child = await resolveImportPath(path, decl.path, ctx.options);
     } catch {
       throw new ModuleGraphDiagnosticError(
         path,
@@ -118,8 +121,11 @@ async function visitModule(path: string, ctx: LoadContext) {
 }
 
 async function readModuleSource(path: string, options: ModuleGraphOptions): Promise<string> {
+  const normalized = normalizeInputPath(path);
   return options.sourceOverrides?.get(path) ??
-    options.sourceOverrides?.get(normalizeInputPath(path)) ??
+    options.sourceOverrides?.get(normalized) ??
+    options.virtualFs?.get(path) ??
+    options.virtualFs?.get(normalized) ??
     await Deno.readTextFile(path);
 }
 
@@ -142,7 +148,9 @@ async function resolveEntryPath(input: string, options: ModuleGraphOptions): Pro
   try {
     return await Deno.realPath(normalized);
   } catch (error) {
-    if (options.sourceOverrides?.has(normalized)) return normalized;
+    if (options.sourceOverrides?.has(normalized) || options.virtualFs?.has(normalized)) {
+      return normalized;
+    }
     throw error;
   }
 }
@@ -151,8 +159,18 @@ function resolveImport(fromPath: string, specifier: string): string {
   return fileURLToPath(new URL(specifier, pathToFileURL(fromPath)));
 }
 
-async function resolveImportPath(fromPath: string, specifier: string): Promise<string> {
-  return await Deno.realPath(resolveImport(fromPath, specifier));
+async function resolveImportPath(fromPath: string, specifier: string, options: ModuleGraphOptions): Promise<string> {
+  const resolved = resolveImport(fromPath, specifier);
+  const normalized = normalizeInputPath(resolved);
+  try {
+    return await Deno.realPath(resolved);
+  } catch {
+    // Check if it exists in virtual FS or sourceOverrides
+    if (options.sourceOverrides?.has(normalized) || options.virtualFs?.has(normalized)) {
+      return normalized;
+    }
+    throw new Error(`cannot resolve import ${specifier}`);
+  }
 }
 
 function fallbackModuleName(path: string): string {

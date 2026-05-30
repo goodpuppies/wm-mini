@@ -8,10 +8,14 @@ import { emitCoreProgram } from "./core/emit_js.ts";
 import { coreFromSurface } from "./core/from_surface.ts";
 import { prepareFfiElaboration } from "./ffi/elab.ts";
 import { inferModule, inferModuleWithSteps, type InferResult, type InferStep } from "./infer.ts";
-import { loadModuleGraph, type ModuleGraph, type ModuleGraphOptions } from "./module_graph.ts";
+import { loadModuleGraph, type ModuleGraph, type ModuleGraphOptions, type VirtualFileSystem } from "./module_graph.ts";
 import { parse, type Surface } from "./parser.ts";
 
 export type CompileOptions = ModuleGraphOptions;
+
+export type VirtualCompileOptions = CompileOptions & {
+  virtualFs: VirtualFileSystem;
+};
 
 export async function compile(source: string, options: CompileOptions = {}): Promise<string> {
   const ast = prepareFfiElaboration(await parse(source, options.surface)).module;
@@ -114,4 +118,37 @@ function checkModuleWithoutImports(module: Module): InferResult {
     throw new Error("source strings with imports require checkFile");
   }
   return inferModule(module);
+}
+
+export async function compileVirtual(
+  entryPath: string,
+  virtualFs: VirtualFileSystem,
+  options: Omit<CompileOptions, "virtualFs"> = {},
+): Promise<string> {
+  return emitCoreProgram((await coreVirtual(entryPath, virtualFs, options)).core);
+}
+
+export async function checkVirtual(
+  entryPath: string,
+  virtualFs: VirtualFileSystem,
+  options: Omit<CompileOptions, "virtualFs"> = {},
+): Promise<Map<string, InferResult>> {
+  return (await analyzeVirtual(entryPath, virtualFs, options)).results;
+}
+
+export async function coreVirtual(
+  entryPath: string,
+  virtualFs: VirtualFileSystem,
+  options: Omit<CompileOptions, "virtualFs"> = {},
+): Promise<CoreFileResult> {
+  const { graph, results } = await analyzeVirtual(entryPath, virtualFs, options);
+  return { graph, results, core: coreProgramFromAnalysis(graph, results) };
+}
+
+export async function analyzeVirtual(
+  entryPath: string,
+  virtualFs: VirtualFileSystem,
+  options: Omit<CompileOptions, "virtualFs"> = {},
+): Promise<{ graph: ModuleGraph; results: Map<string, InferResult> }> {
+  return analyzeFile(entryPath, { ...options, virtualFs });
 }

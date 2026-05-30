@@ -1,5 +1,5 @@
 import { assertRejects } from "@std/assert";
-import { checkFile, checkSource, checkSourceSteps } from "../src/compiler.ts";
+import { checkFile, checkSource, checkSourceSteps, checkVirtual } from "../src/compiler.ts";
 import { expectBinding, expectStepBinding, expectStepMissing } from "./type_helpers.ts";
 
 Deno.test("nominal records infer construction and field access", async () => {
@@ -77,62 +77,31 @@ Deno.test("record annotations disambiguate same-shaped nominal records", async (
 });
 
 Deno.test("imported records remain nominal across file boundaries", async () => {
-  const dir = await Deno.makeTempDir();
-  await Deno.writeTextFile(
-    `${dir}/a.wm`,
-    "export record Point = { x: Number, y: Number }; export let make = () => { .{ x = 1, y = 2 } };",
-  );
-  await Deno.writeTextFile(
-    `${dir}/b.wm`,
-    "export record Point = { x: Number, y: Number }; export let make = () => { .{ x = 1, y = 2 } };",
-  );
-  await Deno.writeTextFile(
-    `${dir}/main.wm`,
-    `
-      from "./a.wm" import * as A;
-      from "./b.wm" import * as B;
-      let good: A.Point = A.make();
-      let bad: A.Point = B.make();
-    `,
-  );
+  const virtualFs = new Map<string, string>([
+    ["/test/a.wm", "export record Point = { x: Number, y: Number }; export let make = () => { .{ x = 1, y = 2 } };"],
+    ["/test/b.wm", "export record Point = { x: Number, y: Number }; export let make = () => { .{ x = 1, y = 2 } };"],
+    ["/test/main.wm", "from \"./a.wm\" import * as A; from \"./b.wm\" import * as B; let good: A.Point = A.make(); let bad: A.Point = B.make();"],
+  ]);
 
-  await assertRejects(() => checkFile(`${dir}/main.wm`), Error, "type mismatch");
+  await assertRejects(() => checkVirtual("/test/main.wm", virtualFs), Error, "type mismatch");
 });
 
 Deno.test("imported record annotations guide record literals", async () => {
-  const dir = await Deno.makeTempDir();
-  await Deno.writeTextFile(
-    `${dir}/point.wm`,
-    "export record Point = { x: Number, y: Number };",
-  );
-  await Deno.writeTextFile(
-    `${dir}/main.wm`,
-    `
-      from "./point.wm" import * as Geometry;
-      let p: Geometry.Point = .{ x = 1, y = 2 };
-      let x = p.x;
-    `,
-  );
+  const virtualFs = new Map<string, string>([
+    ["/test/point.wm", "export record Point = { x: Number, y: Number };"],
+    ["/test/main.wm", "from \"./point.wm\" import * as Geometry; let p: Geometry.Point = .{ x = 1, y = 2 }; let x = p.x;"],
+  ]);
 
-  await checkFile(`${dir}/main.wm`);
+  await checkVirtual("/test/main.wm", virtualFs);
 });
 
 Deno.test("named imports expose exported record types", async () => {
-  const dir = await Deno.makeTempDir();
-  await Deno.writeTextFile(
-    `${dir}/point.wm`,
-    "export record Point = { x: Number, y: Number };",
-  );
-  await Deno.writeTextFile(
-    `${dir}/main.wm`,
-    `
-      from "./point.wm" import { Point };
-      let p: Point = .{ x = 1, y = 2 };
-      let x = p.x;
-    `,
-  );
+  const virtualFs = new Map<string, string>([
+    ["/test/point.wm", "export record Point = { x: Number, y: Number };"],
+    ["/test/main.wm", "from \"./point.wm\" import { Point }; let p: Point = .{ x = 1, y = 2 }; let x = p.x;"],
+  ]);
 
-  await checkFile(`${dir}/main.wm`);
+  await checkVirtual("/test/main.wm", virtualFs);
 });
 
 Deno.test("block-local record names do not escape", async () => {
