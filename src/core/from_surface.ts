@@ -4,6 +4,7 @@ import type {
   Decl,
   Expr,
   JsonObjectField,
+  Located,
   MatchArm,
   Module,
   Param,
@@ -192,6 +193,8 @@ function coreExprFromSurface(expr: Expr): CoreExpr {
         arg: coreExprFromSurface(expr.value),
         node: expr.node,
       };
+    case "Pipe":
+      return desugarPipe(expr);
   }
 }
 
@@ -283,4 +286,37 @@ function coreCtorPatternPayload(args: Pattern[], node: Pattern["node"]): CorePat
   if (args.length === 0) return undefined;
   if (args.length === 1) return corePatternFromSurface(args[0]);
   return { kind: "CorePTuple", items: args.map(corePatternFromSurface), node };
+}
+
+function desugarPipe(pipe: Located<{ kind: "Pipe"; left: Expr; right: Expr }>): CoreExpr {
+  const left = coreExprFromSurface(pipe.left);
+  const right = pipe.right;
+  
+  if (right.kind === "Call") {
+    // e.g., 10 :> add(5) -> add(10, 5)
+    const callee = coreExprFromSurface(right.callee);
+    const args = [pipe.left, ...right.args];
+    return {
+      kind: "CoreApp",
+      callee,
+      arg: coreCallArg(args, pipe.node),
+      node: pipe.node,
+    };
+  } else if (right.kind === "Var") {
+    // e.g., 42 :> double -> double(42)
+    return {
+      kind: "CoreApp",
+      callee: { kind: "CoreVar", name: right.name, node: right.node },
+      arg: left,
+      node: pipe.node,
+    };
+  } else {
+    // For other cases, treat right as a function and call it with left
+    return {
+      kind: "CoreApp",
+      callee: coreExprFromSurface(right),
+      arg: left,
+      node: pipe.node,
+    };
+  }
 }

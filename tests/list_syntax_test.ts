@@ -52,10 +52,7 @@ Deno.test("list pattern binder duplicates are rejected", async () => {
   );
 });
 
-Deno.test("list syntax requires an in-scope algebraic list model", async () => {
-  await assertRejects(
-    () => checkSource("let nums = [1, 2, 3];"),
-    Error,
-    "unknown name Cons",
-  );
+Deno.test("list syntax works with basis list model", async () => {
+  const result = await checkSource("let nums = [1, 2, 3];");
+  expectBinding(result.env, "nums", { type: "List<Number>", vars: 0 });
 });

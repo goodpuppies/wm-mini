@@ -192,6 +192,9 @@ function inferExprInner(
         t = BoolTy;
       }
       break;
+    case "Pipe":
+      t = inferPipe(expr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+      break;
   }
   types.set(expr, t);
   return t;
@@ -476,4 +479,89 @@ function inferParam(
 ): Ty {
   const expected = param.annotation ? typeFromAst(param.annotation, typeEnv, vars) : fresh();
   return inferPattern(param.pattern, expected, env, typeEnv, adts, binders);
+}
+
+function inferPipe(
+  expr: Extract<Expr, { kind: "Pipe" }>,
+  env: Env,
+  typeEnv: TypeEnv,
+  adts: Map<number, TypeDeclInfo>,
+  types: Map<Expr, Ty>,
+  warnings: string[],
+  diagnostics: FrontendDiagnostic[],
+  provenance: TypeProvenance,
+): Ty {
+  const leftType = inferExpr(expr.left, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+  const right = expr.right;
+  
+  if (right.kind === "Call") {
+    // e.g., 10 :> add(5) -> add(10, 5)
+    const calleeType = inferExpr(right.callee, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+    const argTypes = right.args.map((a) => inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics, provenance));
+    const allArgs = [leftType, ...argTypes];
+    const argType = callArg(allArgs);
+    const result = fresh();
+    constrainAt(
+      calleeType,
+      fn([argType], result),
+      expr,
+      () => `type mismatch expected ${quoteType(fn([argType], result))}, got ${quoteType(calleeType)}`,
+      [],
+      provenance,
+      {
+        message: "pipe argument",
+        node: expr.node,
+        span: expr.node?.span,
+        primary: true,
+        expectedCallTupleShape: callArity(argType),
+        actualCallTupleShape: callArity(argType),
+        callDepth: 0,
+      },
+    );
+    return result;
+  } else if (right.kind === "Var") {
+    // e.g., 42 :> double -> double(42)
+    const calleeType = inferExpr(right, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+    const result = fresh();
+    constrainAt(
+      calleeType,
+      fn([leftType], result),
+      expr,
+      () => `type mismatch expected ${quoteType(fn([leftType], result))}, got ${quoteType(calleeType)}`,
+      [],
+      provenance,
+      {
+        message: "pipe argument",
+        node: expr.node,
+        span: expr.node?.span,
+        primary: true,
+        expectedCallTupleShape: callArity(leftType),
+        actualCallTupleShape: callArity(leftType),
+        callDepth: 0,
+      },
+    );
+    return result;
+  } else {
+    // For other cases, treat right as a function and call it with left
+    const calleeType = inferExpr(right, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+    const result = fresh();
+    constrainAt(
+      calleeType,
+      fn([leftType], result),
+      expr,
+      () => `type mismatch expected ${quoteType(fn([leftType], result))}, got ${quoteType(calleeType)}`,
+      [],
+      provenance,
+      {
+        message: "pipe argument",
+        node: expr.node,
+        span: expr.node?.span,
+        primary: true,
+        expectedCallTupleShape: callArity(leftType),
+        actualCallTupleShape: callArity(leftType),
+        callDepth: 0,
+      },
+    );
+    return result;
+  }
 }

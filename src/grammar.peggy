@@ -190,7 +190,9 @@ Add = left:Mul rest:(_ op:("+" / "-") _ right:Mul { return { op, right }; })*
 Mul = left:Unary rest:(_ op:("*" / "/" / "%") _ right:Unary { return { op, right }; })*
   { return rest.reduce((left, r) => at({ kind: "Binary", op: r.op, left, right: r.right }, location()), left); }
 
-Unary = op:("!" / "-") _ value:Unary { return at({ kind: "Unary", op, value }, location()); } / Postfix
+Unary = op:("!" / "-") _ value:Unary { return at({ kind: "Unary", op, value }, location()); } / Pipe
+Pipe = left:Postfix rest:(_ ":>" _ right:Postfix { return right; })*
+  { return rest.reduce((left, right) => at({ kind: "Pipe", left, right }, location()), left); }
 Postfix = head:Primary tail:(_ "(" _ args:ArgList? _ ")" { return args ?? []; })*
   { return tail.reduce((callee, args) => at({ kind: "Call", callee, args }, location()), head); }
 

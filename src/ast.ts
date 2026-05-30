@@ -66,7 +66,8 @@ export type Expr =
   | Located<{ kind: "Panic"; message: Expr }>
   | Located<{ kind: "Block"; items: (Decl | Expr)[]; result: Expr }>
   | Located<{ kind: "Binary"; op: string; left: Expr; right: Expr }>
-  | Located<{ kind: "Unary"; op: string; value: Expr }>;
+  | Located<{ kind: "Unary"; op: string; value: Expr }>
+  | Located<{ kind: "Pipe"; left: Expr; right: Expr }>;
 
 export type RecordExprField = Located<{ name: string; value: Expr }>;
 export type JsonObjectField = Located<{ key: string; value: Expr }>;
