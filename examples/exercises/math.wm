@@ -1,4 +1,7 @@
-export type Int_list = Empty | Cons<Number, Int_list>;
+export type Int_list = Empty | ICons<Number, Int_list>;
+export type List<T> = Nil | Cons<T, List<T>>;
+
+export type Ordering = Less | Equal | Greater;
 
 export let rec myDiv = (n, d) => {
   if (n < d) {0}
@@ -13,36 +16,59 @@ export let divBy2 = (i) => {
   myMod(i,2) == 0
 };
 
-export let rec sumList = (list) => {
-  let rec inner = (list, val) => {
+let rec foldLeft = (fn, acc, list) => {
+  let rec inner = (fn, acc, list) => {
     match(list) {
-      Empty => {val},
-      Cons(i, rest) => {inner(rest, val+i)}
+      [] => {acc},
+      [head, ..tail] => {
+        inner(fn, fn(acc, head), tail)
+      }
     }
   };
-  inner(list, 0)
+  inner(fn, acc, list)
+};
+
+export let rec sumList = (list) => {
+  foldLeft((a,b)=> {a+b}, 0, list)
 };
 
 
 export let rec isEvenLenght = (list) => {
+  match(list) {
+    [] => {true},
+    [head] => {false},
+    [head, cons, ..tail] => { 
+      isEvenLenght(tail)
+    }
+  }
+};
 
-  let rec inner = (list, val) => {
-    match(list) {
-      Empty => {
-        if (val == 0) {
-          true
-        } else {
-          if (divBy2(val)) {
-            true
-          } else {
-            false
-          }
-        }
-      },
-      Cons(i, rest) => {
-        inner(rest, val+1)
+export let compareN = (a,b) => {
+  if (a>=b) {
+    if (a==b) {Equal}
+    else {Greater}
+  }
+  else {Less}
+};
+
+let rec mapList = (fn, list) => {
+  match(list) {
+    [] => { [] },
+    [head, ..tail] => {
+      [fn(head), ..mapList(fn, tail)]
+    }
+  }
+};
+
+let rec filterList = (fn, list) => {
+  match(list) {
+    [] => {[]},
+    [head, ..tail] => {
+      if (fn(head)) {
+        [head, ..filterList(fn, tail)]
+      } else {
+        filterList(fn, tail)
       }
     }
-  };
-  inner(list, 0)
+  }
 };
