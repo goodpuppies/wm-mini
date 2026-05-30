@@ -155,14 +155,14 @@ Initial wm-mini rule:
 
 ## Phase 7: JS Interop Design
 
-| Task                                            | Status  | Notes                                                                                                                                                                                                |
-| ----------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Implement value restriction prerequisite        | Partial | Conservative value restriction is in inference; JS calls are ordinary expansive function calls.                                                                                                      |
-| Design typed external binding declaration       | Partial | JS imports support inferred members, star namespace imports, aliases, and manual annotations; `src/ffi_elab.ts` resolves JS reflection before HM, and HM rejects raw unelaborated namespace imports. |
-| Support direct JS global/member names           | Partial | Core/JS path supports `Math.floor(...)`, `console.log(...)`, and aliased locals like `jsmax(...)`.                                                                                                   |
-| Define dynamic representation conversion rules  | Partial | Number/String/Bool/Void pass directly; tuple function arguments spread at the JS call boundary; `JSON{}`/`JSON[]` construct `Js.Value`.                                                              |
-| Reject or explicitly mark unsafe/raw boundaries | Gap     | Keep type holes out of ordinary code.                                                                                                                                                                |
-| Add no-bindgen smoke tests                      | Partial | `console.log`, `Math.max`, `Math.floor`, `Math.sqrt`, and `node:crypto/createHash` smoke tests exist; `Deno.readTextFile` later.                                                                     |
+| Task                                            | Status  | Notes                                                                                                                                                                                                                                  |
+| ----------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Implement value restriction prerequisite        | Partial | Conservative value restriction is in inference; JS calls are ordinary expansive function calls.                                                                                                                                        |
+| Design typed external binding declaration       | Partial | JS imports support inferred members, star namespace imports, aliases, manual annotations, and receiver-method elaboration; `src/ffi/elab.ts` resolves JS reflection before HM.                                                         |
+| Support direct JS global/member names           | Partial | Core/JS path supports `Math.floor(...)`, `console.log(...)`, aliased locals like `jsmax(...)`, and reflected chains like `proc.stdout.on(...)`.                                                                                        |
+| Define dynamic representation conversion rules  | Partial | Number/String/Bool/Void pass directly; tuple function arguments spread at the JS call boundary; `JSON{}`/`JSON[]` construct `Js.Value`; reflected object results are opaque `Js.Object`; reflected calls return `Result<_, Js.Error>`. |
+| Reject or explicitly mark unsafe/raw boundaries | Partial | Reflected JS is fallible by default; manual typed imports remain the explicit raw boundary for now.                                                                                                                                    |
+| Add no-bindgen smoke tests                      | Partial | `console.log`, `Math.max`, `Math.floor`, `Math.sqrt`, `node:crypto/createHash`, `node:child_process/spawn`, `Deno.readTextFileSync`, and JS throw-to-`Err` smoke tests exist.                                                          |
 
 ## Value Restriction Implementation Slice
 

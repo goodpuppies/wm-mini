@@ -24,5 +24,7 @@ export function addJsImport(env: Env, typeEnv: TypeEnv, decl: JsImportDecl) {
 }
 
 function jsTargetLabel(target: JsImportDecl["target"]): string {
-  return target.kind === "JsGlobal" ? target.path : target.specifier;
+  if (target.kind === "JsGlobal") return target.path;
+  if (target.kind === "JsModule") return target.specifier;
+  return `receiver.${target.path.join(".")}`;
 }

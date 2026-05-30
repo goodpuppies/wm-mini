@@ -26,14 +26,45 @@ export function emitCoreProgram(program: CoreProgram): string {
   const value = owner?.[key];
   return typeof value === "function" ? value.bind(owner) : value;
 };`,
+    `const __wm_js_receiver_member = (path) => (receiver, ...args) => {
+  const owner = path.slice(0, -1).reduce((value, key) => value?.[key], receiver);
+  const value = owner?.[path[path.length - 1]];
+  return typeof value === "function" ? value.apply(owner, args) : value;
+};`,
     `const __wm_js_call = (fn, arg) => __wm_is_tuple(arg) ? fn(...arg) : fn(arg);`,
     `const __wm_js_option_wrap = (value) => value == null ? __wm_basis_None : __wm_basis_Some(value);`,
     `const __wm_js_option_unwrap = (value) => value?.ctor === -1 ? undefined : value?.ctor === -2 ? value.args[0] : value;`,
-    `const __wm_js_apply = (fn, arg, converters, resultConverter) => {
+    `const __wm_js_to_workman = (value, converter) => {
+  if (converter === "option") return __wm_js_option_wrap(value);
+  if (typeof converter === "object" && converter.kind === "fn") {
+    return (...args) => __wm_js_to_workman(
+      value(...args.map((arg, index) => __wm_js_to_js(arg, converter.params[index] ?? "id"))),
+      converter.result,
+    );
+  }
+  return value;
+};`,
+    `const __wm_js_to_js = (value, converter) => {
+  if (converter === "option") return __wm_js_option_unwrap(value);
+  if (typeof converter === "object" && converter.kind === "fn") {
+    return (...args) => __wm_js_to_js(
+      value(...args.map((arg, index) => __wm_js_to_workman(arg, converter.params[index] ?? "id"))),
+      converter.result,
+    );
+  }
+  return value;
+};`,
+    `const __wm_js_apply = (fn, arg, converters, resultConverter, fallible) => {
   const raw = converters.length === 0 ? [] : converters.length === 1 ? [arg] : (__wm_is_tuple(arg) ? Array.from(arg) : [arg]);
-  const args = raw.map((value, index) => converters[index] === "option" ? __wm_js_option_unwrap(value) : value);
-  const result = fn(...args);
-  return resultConverter === "option" ? __wm_js_option_wrap(result) : result;
+  const args = raw.map((value, index) => __wm_js_to_js(value, converters[index] ?? "id"));
+  if (fallible) {
+    try {
+      return __wm_basis_Ok(__wm_js_to_workman(fn(...args), resultConverter));
+    } catch (error) {
+      return __wm_basis_Err(error);
+    }
+  }
+  return __wm_js_to_workman(fn(...args), resultConverter);
 };`,
     `const __wm_eq = (a, b) => {
   if (a === b) return true;
@@ -144,7 +175,7 @@ function emitDecl(decl: CoreDecl): string[] {
   if (decl.kind === "CoreImport" || decl.kind === "CoreRecord") return [];
   if (decl.kind === "CoreJsImport") {
     const target = jsTargetRef(decl.target);
-    const prefix = target.setup ? [target.setup] : [];
+    const prefix: string[] = target.kind === "module" ? [target.setup] : [];
     if (decl.clause.kind === "Namespace") {
       return [
         ...prefix,
@@ -219,19 +250,43 @@ let bindingTemp = 0;
 function jsImportWrapper(memberRef: string, spec: JsImportSpec): string {
   return `(__arg) => __wm_js_apply(${memberRef}, __arg, ${
     JSON.stringify(jsParamConverters(spec.type))
-  }, ${JSON.stringify(jsResultConverter(spec.type))})`;
+  }, ${JSON.stringify(jsResultConverter(spec.type, !!spec.fallible))}, ${
+    JSON.stringify(!!spec.fallible)
+  })`;
 }
 
-function jsParamConverters(type: TypeExpr | undefined): string[] {
+type JsConverter = "id" | "option" | {
+  kind: "fn";
+  params: JsConverter[];
+  result: JsConverter;
+};
+
+function jsParamConverters(type: TypeExpr | undefined): JsConverter[] {
   return type?.kind === "TFn" ? type.params.map(jsConverter) : [];
 }
 
-function jsResultConverter(type: TypeExpr | undefined): string {
-  return type?.kind === "TFn" ? jsConverter(type.result) : "id";
+function jsResultConverter(type: TypeExpr | undefined, fallible: boolean): JsConverter {
+  if (type?.kind !== "TFn") return "id";
+  const resultType = fallible ? resultOkType(type.result) : type.result;
+  return resultType ? jsConverter(resultType) : "id";
 }
 
-function jsConverter(type: TypeExpr): string {
-  return type.kind === "TName" && type.name === "Option" ? "option" : "id";
+function jsConverter(type: TypeExpr): JsConverter {
+  if (type.kind === "TName" && type.name === "Option") return "option";
+  if (type.kind === "TFn") {
+    return {
+      kind: "fn",
+      params: type.params.map(jsConverter),
+      result: jsConverter(type.result),
+    };
+  }
+  return "id";
+}
+
+function resultOkType(type: TypeExpr): TypeExpr | undefined {
+  return type.kind === "TName" && type.name === "Result" && type.args.length === 2
+    ? type.args[0]
+    : undefined;
 }
 
 function emitBasisConstructors(): string[] {
@@ -323,6 +378,9 @@ type JsTargetRef = { kind: "global"; path: string; setup?: string } | {
   kind: "module";
   name: string;
   setup: string;
+} | {
+  kind: "receiver";
+  path: string[];
 };
 
 let jsImportTemp = 0;
@@ -337,13 +395,16 @@ function jsTargetRef(target: Extract<CoreDecl, { kind: "CoreJsImport" }>["target
       setup: `const ${name} = await import(${JSON.stringify(target.specifier)});`,
     };
   }
+  if (target.kind === "JsReceiver") return { kind: "receiver", path: target.path };
   throw new Error("unsupported JS import target");
 }
 
 function jsMemberRef(target: JsTargetRef, member: string): string {
-  return target.kind === "global"
-    ? `__wm_js_member(${JSON.stringify(target.path)} + "." + ${member})`
-    : `__wm_js_member_obj(${target.name}, ${member})`;
+  if (target.kind === "global") {
+    return `__wm_js_member(${JSON.stringify(target.path)} + "." + ${member})`;
+  }
+  if (target.kind === "module") return `__wm_js_member_obj(${target.name}, ${member})`;
+  return `__wm_js_receiver_member(${JSON.stringify(target.path)})`;
 }
 
 function emitPatternAssert(

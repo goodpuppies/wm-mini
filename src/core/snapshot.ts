@@ -10,9 +10,13 @@ function showDecl(decl: CoreDecl): string {
     case "CoreImport":
       return `import ${JSON.stringify(decl.path)}`;
     case "CoreJsImport":
-      return decl.target.kind === "JsGlobal"
-        ? `import js.global(${JSON.stringify(decl.target.path)})`
-        : `import js.module(${JSON.stringify(decl.target.specifier)})`;
+      if (decl.target.kind === "JsGlobal") {
+        return `import js.global(${JSON.stringify(decl.target.path)})`;
+      }
+      if (decl.target.kind === "JsModule") {
+        return `import js.module(${JSON.stringify(decl.target.specifier)})`;
+      }
+      return `import js.receiver(${decl.target.path.join(".")})`;
     case "CoreLet": {
       const head = `${decl.exported ? "export " : ""}let${decl.recursive ? " rec" : ""}`;
       return `${head} ${

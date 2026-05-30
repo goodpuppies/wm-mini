@@ -52,6 +52,33 @@ Deno.test("FFI elaboration rewrites namespace and object calls to concrete impor
   );
 });
 
+Deno.test("FFI elaboration rewrites reflected receiver prototype calls", async () => {
+  const module = await parse(`
+    from js.module("node:child_process") import { spawn };
+    let main = () => {
+      let proc = spawn("cmd");
+      match(proc) {
+        Ok(p) => {
+          p.stdout.on("data", (chunk) => { print(chunk) })
+        },
+        Err(_) => { proc },
+      }
+    };
+  `);
+
+  const ffi = prepareFfiElaboration(module);
+  const receiverImport = ffi.module.decls.find((decl) =>
+    decl.kind === "JsImportDecl" && decl.target.kind === "JsReceiver"
+  );
+
+  assertEquals(
+    receiverImport?.kind === "JsImportDecl" && receiverImport.target.kind === "JsReceiver"
+      ? receiverImport.target.path
+      : undefined,
+    ["stdout", "on"],
+  );
+});
+
 Deno.test("HM inference rejects unelaborated reflected JS imports", async () => {
   const module = await parse(`
     from js.global("Math") import * as Math;

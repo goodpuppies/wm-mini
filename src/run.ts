@@ -18,7 +18,16 @@ export async function runFile(input: string, options: RunOptions = {}): Promise<
   try {
     await Deno.writeTextFile(output, await compileFile(input, options));
     const command = new Deno.Command(Deno.execPath(), {
-      args: ["run", output, ...(options.args ?? [])],
+      args: [
+        "run",
+        "--allow-read",
+        "--allow-write",
+        "--allow-run",
+        "--allow-env",
+        "--allow-net",
+        output,
+        ...(options.args ?? []),
+      ],
       stdout: options.stdout ?? "inherit",
       stderr: options.stderr ?? "inherit",
     });

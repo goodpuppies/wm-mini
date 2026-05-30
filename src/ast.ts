@@ -32,11 +32,17 @@ export type ImportClause =
 export type ImportSpec = Located<{ name: string; alias?: string }>;
 export type JsTarget =
   | Located<{ kind: "JsGlobal"; path: string }>
-  | Located<{ kind: "JsModule"; specifier: string }>;
+  | Located<{ kind: "JsModule"; specifier: string }>
+  | Located<{ kind: "JsReceiver"; path: string[] }>;
 export type JsImportClause =
   | Located<{ kind: "Namespace"; alias: string }>
   | Located<{ kind: "Named"; specs: JsImportSpec[]; alias?: string }>;
-export type JsImportSpec = Located<{ name: string; alias?: string; type?: TypeExpr }>;
+export type JsImportSpec = Located<{
+  name: string;
+  alias?: string;
+  type?: TypeExpr;
+  fallible?: boolean;
+}>;
 export type Binding = Located<{ pattern: Pattern; annotation?: TypeExpr; value: Expr }>;
 export type CtorDecl = Located<{ name: string; args: TypeExpr[] }>;
 export type RecordFieldDecl = Located<{ name: string; type: TypeExpr }>;

@@ -265,7 +265,7 @@ let bad = floor(1, 2);
   assertEquals(diagnostics?.[0].range.end, { line: 3, character: 21 });
   assertEquals(
     diagnostics?.[0].relatedInformation?.[0].message,
-    "callee floor: (Number) => Number",
+    "callee floor: (Number) => Result<Number, Js.Error>",
   );
   assertEquals(diagnostics?.[0].relatedInformation?.[0].location.range.start, {
     line: 3,
@@ -634,7 +634,7 @@ function charRange(source: string, text: string) {
 
 async function runLsp(steps: (RpcMessage | (() => Promise<void>))[]): Promise<RpcMessage[]> {
   const child = new Deno.Command(Deno.execPath(), {
-    args: ["run", "--allow-read", "--allow-env", "src/lsp/server.ts"],
+    args: ["run", "--allow-read", "--allow-env", "--allow-run", "src/lsp/server.ts"],
     cwd: new URL("../", import.meta.url).pathname,
     stdin: "piped",
     stdout: "piped",

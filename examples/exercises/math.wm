@@ -45,7 +45,7 @@ export let rec isEvenLenght = (list) => {
 
 export let compareN = (a,b) => {
   if (a>=b) {
-    if (a==b) {Equal}
+    if (a==b){Equal}
     else {Greater}
   }
   else {Less}

@@ -298,7 +298,7 @@ export function baseEnv(typeEnv: TypeEnv = baseTypeEnv()): Env {
 
 export function baseTypeEnv(): TypeEnv {
   const env = new Map(
-    ["Number", "Bool", "String", "Void", "Js.Value"].map((name) => [
+    ["Number", "Bool", "String", "Void", "Js.Value", "Js.Object", "Js.Error"].map((name) => [
       name,
       { ...freshTypeInfo(name, 0), basis: true },
     ]),

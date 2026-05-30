@@ -297,7 +297,7 @@ optional parameters, varargs, or overload sets directly.
 
 Current hygiene rule:
 
-- `src/ffi_elab.ts` may use TypeScript reflection and resolve JS overload/rest/optional arities.
+- `src/ffi/elab.ts` may use TypeScript reflection and resolve JS overload/rest/optional arities.
 - `src/infer.ts` must not import JS reflection or choose overloads.
 - `src/infer/js_imports.ts` accepts only already-typed JS import specs. Raw reflected namespace
   imports are rejected as unelaborated input.
@@ -318,12 +318,17 @@ explicit dynamic implementations. Use sites should keep ordinary JS spelling, su
 `Math.floor(4.8)` or `console.log("answer", 42)`, rather than forcing renamed shims like
 `consoleLog`.
 
+Reflected JS calls are fallible by default. If reflection says a JS function returns `T`, the
+Workman type is `Result<T, Js.Error>`; if reflection says it may return nullish, the Workman type is
+`Result<Option<T>, Js.Error>`. This keeps JavaScript exceptions out of the ordinary SML value model:
+foreign code may throw, so reflected foreign calls must be handled with `Ok`/`Err`.
+
 Manual annotations are still the fallback when TypeScript reflection is unavailable, too broad, or
-when overload selection needs help:
+when overload selection needs help. Manual annotations currently mean "use this raw boundary":
 
 ```txt
 from js.global("console") import { log: (String, Number) => Void } as console;
-from js.global("Deno") import { readTextFile: (String) => Js.Promise<String> } as Deno;
+from js.global("Deno") import { readTextFileSync: (String) => String } as Deno;
 ```
 
 Raw JavaScript object and array values must be marked explicitly with JSON literals:
@@ -362,6 +367,10 @@ This mapping is part of FFI reflection and JS boundary codegen:
 - JS return values typed as `Option<T>` are wrapped with `None`/`Some`
 - Workman arguments typed as `Option<T>` are unwrapped before crossing into JS, with `None` becoming
   `undefined`
+- reflected JS object returns elaborate to opaque `Js.Object`
+- reflected member calls on known JS objects elaborate before HM as ordinary receiver-first
+  functions, so `proc.stdout.on("data", f)` becomes a normal typed call with `proc` as the first
+  argument
 
 No JS interop design should require learning a fake replacement API for ordinary JS objects.
 
@@ -402,8 +411,9 @@ externally allocated runtime value must not be assigned multiple incompatible in
 External namespace imports should elaborate like ordinary typed values in the static basis:
 
 ```txt
-console.log : (String, Number) -> Void
-Math.floor : Number -> Number
+console.log : (String, Number) -> Result<Void, Js.Error>
+Math.floor : Number -> Result<Number, Js.Error>
+Deno.readTextFileSync : String -> Result<String, Js.Error>
 ```
 
 At runtime, applying an external value is a dynamic-basis operation analogous to applying an SML
@@ -414,8 +424,10 @@ Initial representation rules should stay narrow:
 
 - `Number`, `String`, `Bool`, and `Void` map directly to JS primitives.
 - Functions cross the boundary only when explicitly typed.
-- Opaque `Js.Value` / `Js.Object` types can be added later, but ordinary pattern matching and
-  equality should not inspect them by default.
+- Opaque `Js.Value`, `Js.Object`, and `Js.Error` types are not inspected by ordinary pattern
+  matching or equality by default.
+- Reflected throws are caught and returned as `Err(error)`. Reflected nullish returns are wrapped
+  inside the success channel as `Ok(None)` or `Ok(Some(value))`.
 - Any unsafe or untyped boundary must be syntactically explicit.
 
 ## Compiler Invariants

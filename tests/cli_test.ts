@@ -279,9 +279,18 @@ Deno.test("cli run calls inferred JS imports", async () => {
       from js.global("Math") import { max as jsmax, floor };
       from js.global("Math") import * as Math;
       let main = () => {
-        print(jsmax(1, 2));
-        print(floor(4.8));
-        print(Math.sqrt(9))
+        print(match(jsmax(1, 2)) {
+          Ok(n) => { n },
+          Err(_) => { -1 },
+        });
+        print(match(floor(4.8)) {
+          Ok(n) => { n },
+          Err(_) => { -1 },
+        });
+        print(match(Math.sqrt(9)) {
+          Ok(n) => { n },
+          Err(_) => { -1 },
+        })
       };
     `,
   );
@@ -393,6 +402,86 @@ Deno.test("cli run wraps and unwraps JS nullish Option values", async () => {
 
   assertEquals(result.code, 0);
   assertEquals(result.stdout, "none\nsome\ntrue\nfalse\n");
+  assertEquals(result.stderr, "");
+});
+
+Deno.test("cli run grants generated JS permissions for reflected child process interop", async () => {
+  const dir = await Deno.makeTempDir();
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(
+    input,
+    `
+      from js.module("node:child_process") import { spawn };
+      let main = () => {
+        let proc = spawn("sh", JSON["-c", "exit 0"]);
+        match(proc) {
+          Ok(p) => {
+            p.on("close", (code) => {
+              print(match(code) {
+                Some(n) => { n },
+                None => { -1 },
+              });
+            });
+            void
+          },
+          Err(_) => { print(-1) },
+        }
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout, "0\n");
+  assertEquals(result.stderr, "");
+});
+
+Deno.test("cli run reads a text file through reflected Deno APIs", async () => {
+  const dir = await Deno.makeTempDir();
+  const data = `${dir}/message.txt`;
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(data, "hello from deno");
+  await Deno.writeTextFile(
+    input,
+    `
+      from js.global("Deno") import * as Deno;
+      let main = () => {
+        print(match(Deno.readTextFileSync(${JSON.stringify(data)})) {
+          Ok(text) => { text },
+          Err(_) => { "read failed" },
+        })
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout, "hello from deno\n");
+  assertEquals(result.stderr, "");
+});
+
+Deno.test("cli run maps reflected JS throws to Result Err", async () => {
+  const dir = await Deno.makeTempDir();
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(
+    input,
+    `
+      from js.global("Deno") import * as Deno;
+      let main = () => {
+        print(match(Deno.readTextFileSync("${dir}/missing.txt")) {
+          Ok(_) => { "ok" },
+          Err(_) => { "err" },
+        })
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout, "err\n");
   assertEquals(result.stderr, "");
 });
 

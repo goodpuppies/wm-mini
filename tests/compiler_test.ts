@@ -173,10 +173,10 @@ Deno.test("supports inferred JS named and namespace imports", async () => {
     let rooted = Math.sqrt(9);
   `);
 
-  expectBinding(result.env, "floor", { type: "(Number) => Number", vars: 0 });
-  expectBinding(result.env, "bigger", { type: "Number", vars: 0 });
-  expectBinding(result.env, "rounded", { type: "Number", vars: 0 });
-  expectBinding(result.env, "rooted", { type: "Number", vars: 0 });
+  expectBinding(result.env, "floor", { type: "(Number) => Result<Number, Js.Error>", vars: 0 });
+  expectBinding(result.env, "bigger", { type: "Result<Number, Js.Error>", vars: 0 });
+  expectBinding(result.env, "rounded", { type: "Result<Number, Js.Error>", vars: 0 });
+  expectBinding(result.env, "rooted", { type: "Result<Number, Js.Error>", vars: 0 });
 });
 
 Deno.test("supports inferred variadic JS imports as polymorphic unary functions", async () => {
@@ -188,7 +188,7 @@ Deno.test("supports inferred variadic JS imports as polymorphic unary functions"
     };
   `);
 
-  expectBinding(result.env, "main", { type: "(Void) => Void", vars: 0 });
+  expectBinding(result.env, "main", { type: "(Void) => Result<Void, Js.Error>", vars: 0 });
 });
 
 Deno.test("supports inferred JS module imports", async () => {
@@ -197,7 +197,7 @@ Deno.test("supports inferred JS module imports", async () => {
     let hash = createHash("sha256");
   `);
 
-  expectBinding(result.env, "hash", { type: "Js.Value", vars: 0 });
+  expectBinding(result.env, "hash", { type: "Result<Js.Object, Js.Error>", vars: 0 });
 });
 
 Deno.test("maps reflected JS nullish returns to basis Option", async () => {
@@ -205,12 +205,13 @@ Deno.test("maps reflected JS nullish returns to basis Option", async () => {
     from js.global("document") import { querySelector };
     let found = querySelector("main");
     let isMissing = match(found) {
-      Some(_) => { false },
-      None => { true },
+      Ok(Some(_)) => { false },
+      Ok(None) => { true },
+      Err(_) => { true },
     };
   `);
 
-  expectBinding(result.env, "found", { type: "Option<Js.Value>", vars: 0 });
+  expectBinding(result.env, "found", { type: "Result<Option<Js.Value>, Js.Error>", vars: 0 });
   expectBinding(result.env, "isMissing", { type: "Bool", vars: 0 });
 });
 
@@ -222,9 +223,54 @@ Deno.test("resolves reflected JS optional arities before HM", async () => {
     let p3 = spawn("cmd", JSON[], JSON{});
   `);
 
-  expectBinding(result.env, "p1", { type: "Js.Value", vars: 0 });
-  expectBinding(result.env, "p2", { type: "Js.Value", vars: 0 });
-  expectBinding(result.env, "p3", { type: "Js.Value", vars: 0 });
+  expectBinding(result.env, "p1", { type: "Result<Js.Object, Js.Error>", vars: 0 });
+  expectBinding(result.env, "p2", { type: "Result<Js.Object, Js.Error>", vars: 0 });
+  expectBinding(result.env, "p3", { type: "Result<Js.Object, Js.Error>", vars: 0 });
+});
+
+Deno.test("reflects prototype member calls from JS object results before HM", async () => {
+  const result = await checkSource(`
+    from js.module("node:child_process") import { spawn };
+    from js.module("node:crypto") import { createHash };
+    let hash = createHash("sha256");
+    let proc = spawn("cmd");
+    let hooked = match(proc) {
+      Ok(p) => {
+        match(hash) {
+          Ok(h) => {
+            p.stdout.on("data", (chunk) => {
+              h.update(chunk);
+            })
+          },
+          Err(_) => { proc },
+        }
+      },
+      Err(_) => { proc },
+    };
+  `);
+
+  expectBinding(result.env, "proc", { type: "Result<Js.Object, Js.Error>", vars: 0 });
+  expectBinding(result.env, "hooked", { type: "Result<Js.Object, Js.Error>", vars: 0 });
+});
+
+Deno.test("reflects literal JS event callback parameter types", async () => {
+  const result = await checkSource(`
+    from js.module("node:child_process") import { spawn };
+    let proc = spawn("cmd");
+    let closed = match(proc) {
+      Ok(p) => {
+        p.on("close", (code) => {
+          match(code) {
+            Some(n) => { n == 0 },
+            None => { false },
+          };
+        })
+      },
+      Err(_) => { proc },
+    };
+  `);
+
+  expectBinding(result.env, "closed", { type: "Result<Js.Object, Js.Error>", vars: 0 });
 });
 
 Deno.test("reflected JS overload sets are not bare HM values", async () => {
@@ -236,6 +282,18 @@ Deno.test("reflected JS overload sets are not bare HM values", async () => {
       `),
     Error,
     "unknown name spawn",
+  );
+});
+
+Deno.test("reflected JS calls report unresolved overload selection", async () => {
+  await assertRejects(
+    () =>
+      checkSource(`
+        from js.global("Deno") import * as Deno;
+        let text = Deno.readTextFileSync();
+      `),
+    Error,
+    "cannot determine JS FFI overload for Deno.readTextFileSync with 0 arguments; available arities: 1",
   );
 });
 
