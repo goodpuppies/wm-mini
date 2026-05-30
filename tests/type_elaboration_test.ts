@@ -102,8 +102,9 @@ Deno.test("wmsml simultaneous val groups do not expose earlier bindings in the s
 Deno.test("wmsml val rec rejects unguarded recursive values", async () => {
   await assertRejects(
     () => checkSourceSteps("val rec x = x", { surface: "wmsml" }),
-    Error,
-    "recursive references must be guarded by a function",
+  );
+  await assertRejects(
+    () => checkSourceSteps("val rec x = 1", { surface: "wmsml" }),
   );
 });
 

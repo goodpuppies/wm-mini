@@ -54,7 +54,7 @@ ValBinding
     { return { pattern, annotation: ann, value }; }
 
 RecValBinding
-  = name:Name _ ann:TypeAnn? _ "=" _ value:Expr
+  = name:Name _ ann:TypeAnn? _ "=" _ value:FnExpr
     { return { pattern: { kind: "PVar", name }, annotation: ann, value }; }
 
 DatatypeDecl

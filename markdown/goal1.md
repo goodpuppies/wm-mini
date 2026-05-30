@@ -105,8 +105,8 @@ Non-overlap for Goal 1:
 
 - SML exceptions, refs, signatures, functors, sharing constraints, and the full Basis are out of
   scope.
-- SML equality-type discipline (`''a`) is out of scope; polymorphic `==`/`!=` are accepted in Goal
-  1.
+- SML equality-type discipline (`''a`) is out of scope; equality is conservatively limited to known
+  equality-shaped types rather than fully polymorphic `''a`.
 - SML flexible record inference is out of scope; Workman records are nominal in Goal 1.
 - SML value restriction machinery is out of scope while refs, exceptions, and mutation are out of
   scope.

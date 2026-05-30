@@ -27,6 +27,7 @@ import {
 } from "../types.ts";
 import { isDecl } from "./ast_utils.ts";
 import { inferDecl } from "./decl.ts";
+import { assertEqualityType } from "./equality.ts";
 import { checkExhaustive, mentionsLocalType } from "./exhaustiveness.ts";
 import { warnRedundantMatchArms } from "./decl_helpers.ts";
 import { assertJsonCompatible, jsonValueTy } from "./json.ts";
@@ -362,13 +363,12 @@ function inferBinary(
   const result = fresh();
   const op: Scheme | undefined = env.get(expr.op);
   if (!op) throw new Error(`unknown operator ${expr.op}`);
+  const left = inferExpr(expr.left, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+  const right = inferExpr(expr.right, env, typeEnv, adts, types, warnings, diagnostics, provenance);
   constrain(
     instantiate(op),
     fn(
-      [tuple([
-        inferExpr(expr.left, env, typeEnv, adts, types, warnings, diagnostics, provenance),
-        inferExpr(expr.right, env, typeEnv, adts, types, warnings, diagnostics, provenance),
-      ])],
+      [tuple([left, right])],
       result,
     ),
     rememberProvenance(provenance, {
@@ -377,6 +377,7 @@ function inferBinary(
       span: expr.node?.span,
     }),
   );
+  if (expr.op === "==" || expr.op === "!=") assertEqualityType(left, typeEnv, adts);
   return result;
 }
 

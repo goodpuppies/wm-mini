@@ -221,3 +221,29 @@ Deno.test("wmsml val rec can overwrite constructor identifier status", async () 
     { type: "('a) => Number", vars: 1 },
   );
 });
+
+Deno.test("wmsml equality rejects function types", async () => {
+  await assertRejects(
+    () =>
+      checkSource(
+        `
+          val bad = (fn x => x) = (fn y => y)
+        `,
+        { surface: "wmsml" },
+      ),
+    Error,
+    "does not admit equality",
+  );
+
+  await assertRejects(
+    () =>
+      checkSource(
+        `
+          val same = fn (x, y) => x = y
+        `,
+        { surface: "wmsml" },
+      ),
+    Error,
+    "does not admit equality",
+  );
+});
