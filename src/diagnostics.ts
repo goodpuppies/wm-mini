@@ -14,6 +14,9 @@ export type FrontendRelatedDiagnostic = {
   node?: AstNode;
   span?: SourceSpan;
   primary?: boolean;
+  expectedCallTupleShape?: number;
+  actualCallTupleShape?: number;
+  callDepth?: number;
 };
 
 export class FrontendDiagnosticError extends Error {

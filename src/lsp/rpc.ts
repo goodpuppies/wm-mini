@@ -26,11 +26,18 @@ export function decodeMessages(
     if (headerEnd < 0) break;
     const header = decoder.decode(bytes.slice(0, headerEnd));
     const length = contentLength(header);
-    if (length === undefined) break;
+    if (length === undefined) {
+      bytes = bytes.slice(headerEnd + 4);
+      continue;
+    }
     const bodyStart = headerEnd + 4;
     const bodyEnd = bodyStart + length;
     if (bytes.length < bodyEnd) break;
-    messages.push(JSON.parse(decoder.decode(bytes.slice(bodyStart, bodyEnd))));
+    try {
+      messages.push(JSON.parse(decoder.decode(bytes.slice(bodyStart, bodyEnd))));
+    } catch {
+      // Drop malformed message payload and continue decoding subsequent frames.
+    }
     bytes = bytes.slice(bodyEnd);
   }
   return { messages, rest: bytes };

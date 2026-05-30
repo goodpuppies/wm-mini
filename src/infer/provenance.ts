@@ -22,14 +22,34 @@ export function constrainAt(
       provenance && reason ? rememberProvenance(provenance, reason) : undefined,
     );
   } catch (error) {
-    const primary = related.find((item) => item.primary);
+    const primary = selectPrimaryCallsite(related, reason);
     throw diagnosticError(
       message ? new Error(message()) : error,
       primary?.node ?? expr?.node,
       undefined,
-      primary ? related.filter((item) => item !== primary) : related,
+      primary ? dedupeRelated([...related, ...(reason && reason !== primary ? [reason] : [])]) : related,
     );
   }
+}
+
+function selectPrimaryCallsite(
+  related: FrontendRelatedDiagnostic[],
+  reason?: FrontendRelatedDiagnostic,
+): FrontendRelatedDiagnostic | undefined {
+  const all = dedupeRelated([...related, ...(reason ? [reason] : [])]);
+  const calls = all.filter((item) =>
+    item.expectedCallTupleShape !== undefined && item.actualCallTupleShape !== undefined
+  );
+  if (calls.length > 0) {
+    const byDepth = [...calls].sort((a, b) => (a.callDepth ?? 0) - (b.callDepth ?? 0));
+    const mismatch = byDepth.find((item) => item.expectedCallTupleShape !== item.actualCallTupleShape);
+    if (mismatch) return mismatch;
+    const targetShape = byDepth[0].actualCallTupleShape!;
+    const boundary = byDepth.find((item) => item.actualCallTupleShape !== targetShape);
+    if (boundary) return boundary;
+  }
+  const inheritedPrimary = related.find((item) => item.primary);
+  return inheritedPrimary ?? (reason?.primary ? reason : undefined);
 }
 
 export function rememberProvenance(

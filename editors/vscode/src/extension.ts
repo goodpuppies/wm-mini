@@ -36,6 +36,22 @@ export async function activate(context: ExtensionContext) {
       synchronize: {
         fileEvents: workspace.createFileSystemWatcher("**/*.wm"),
       },
+      middleware: {
+        handleDiagnostics: (uri, diagnostics, next) => {
+          outputChannel.appendLine(
+            `[wm-client] diagnostics uri=${uri.toString()} count=${diagnostics.length}`,
+          );
+          next(uri, diagnostics);
+        },
+        provideHover: async (document, position, token, next) => {
+          const hover = await next(document, position, token);
+          outputChannel.appendLine(
+            `[wm-client] hover uri=${document.uri.toString()} ` +
+              `line=${position.line} char=${position.character} result=${hover ? "hit" : "null"}`,
+          );
+          return hover;
+        },
+      },
       outputChannel,
       traceOutputChannel: outputChannel,
     };

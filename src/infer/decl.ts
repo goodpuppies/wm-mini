@@ -20,6 +20,7 @@ import {
 } from "../types.ts";
 import { resultExpr } from "./ast_utils.ts";
 import { hasUnguardedRecursiveRef, referencesTypeName, rejectDuplicates } from "./decl_helpers.ts";
+import { findAccidentalMatchFnInFunction, hasTrailingStatementLikeResult } from "./decl_match_hint.ts";
 import { inferExpr } from "./expr.ts";
 import { isVectorExhaustive } from "./exhaustiveness.ts";
 import { addJsImport } from "./js_imports.ts";
@@ -424,31 +425,84 @@ function constrainBinding(
       );
       const evidence = recursiveResultEvidence(name, value, expectedFn.result, types);
       const bodyResult = resultExpr(value.body);
+      const accidentalMatchFn = findAccidentalMatchFnInFunction(value.body);
+      const trailingStatementLikeResult = hasTrailingStatementLikeResult(value.body);
+      const listElementVsListHint = recursiveListElementVsListHint(expectedFn.result, actualFn.result, bodyResult);
+      const actualResult = prune(actualFn.result);
+      const resultProvenance = provenanceForType(expectedFn.result, provenance).map((item) => ({
+        ...item,
+        primary: false,
+      }));
+      const primaryCallee =
+        resultProvenance.find((item) =>
+          item.message === "call argument" &&
+          item.expectedCallTupleShape !== undefined &&
+          item.actualCallTupleShape !== undefined &&
+          item.expectedCallTupleShape !== item.actualCallTupleShape
+        ) ??
+          resultProvenance.find((item) => item.message.startsWith(`callee ${name}:`)) ??
+          resultProvenance.find((item) => item.message.startsWith("callee "));
+      const prioritizedResultProvenance = primaryCallee
+        ? resultProvenance.map((item) => item === primaryCallee ? { ...item, primary: true } : item)
+        : resultProvenance;
+      const related = [
+        {
+          message: `body: ${show(actualFn.result)}`,
+          node: bodyResult.node,
+          span: bodyResult.node?.span,
+        },
+        ...(listElementVsListHint ? [listElementVsListHint] : []),
+        ...(accidentalMatchFn
+          ? [{
+            message: "HINT: found `match(...) => { ... }` inside function body; did you mean `match(...) { ... }`?",
+            node: accidentalMatchFn.node,
+            span: accidentalMatchFn.node?.span,
+          }]
+          : []),
+        ...((actualResult.tag === "prim" && actualResult.name === "Void" && trailingStatementLikeResult)
+          ? [{
+            message: "HINT: returns Void; remove trailing `;` on last expression",
+            node: bodyResult.node,
+            span: bodyResult.node?.span,
+          }]
+          : []),
+        ...(evidence.length > 0
+          ? [{
+            message: "rec: occurrences share one monomorphic type",
+            node: bindingNode,
+            span: bindingNode?.span,
+          }]
+          : []),
+        ...expressionTypeEvidence(value, expectedFn.result, types),
+        ...prioritizedResultProvenance,
+        ...evidence.slice(1).map((item) => item.related),
+      ];
       constrainAt(
         expectedFn.result,
         actualFn.result,
         evidence[0]?.expr ?? bodyResult,
         () => `type mismatch ${quoteType(expectedFn.result)} vs ${quoteType(actualFn.result)}`,
-        evidence.length > 0
-          ? [
-            {
-              message: `body: ${show(actualFn.result)}`,
-              node: bodyResult.node,
-              span: bodyResult.node?.span,
-            },
-            {
-              message: "rec: occurrences share one monomorphic type",
-              node: bindingNode,
-              span: bindingNode?.span,
-            },
-            ...expressionTypeEvidence(value, expectedFn.result, types),
-            ...provenanceFor(evidence[0].expr, types, provenance),
-            ...evidence.slice(1).map((item) => item.related),
-          ]
-          : [],
+        related,
       );
       return;
     }
   }
   constrainAt(expected, actual, resultExpr(value));
 }
+
+function recursiveListElementVsListHint(expected: Ty, actual: Ty, expr: Expr) {
+  const expectedTy = prune(expected);
+  const actualTy = prune(actual);
+  if (
+    (expectedTy.tag === "var" && actualTy.tag === "named" && actualTy.name === "List") ||
+    (actualTy.tag === "var" && expectedTy.tag === "named" && expectedTy.name === "List")
+  ) {
+    return {
+      message: "HINT: list element vs List; use `..` to splice a tail list",
+      node: expr.node,
+      span: expr.node?.span,
+    };
+  }
+  return undefined;
+}
+

@@ -100,19 +100,25 @@ function errorDiagnostic(error: unknown, source = "", uri = ""): LspDiagnostic {
 }
 
 function lspDiagnostic(diagnostic: FrontendDiagnostic, source = "", uri = ""): LspDiagnostic {
+  const relatedInformation = diagnostic.related
+    ?.map((related) => ({
+      location: {
+        uri,
+        range: related.span && source ? spanRange(source, related.span) : startRange,
+      },
+      message: related.message,
+    }))
+    .filter((related) =>
+      related.location.uri.startsWith("file://") && isValidRange(related.location.range)
+    );
+
   return {
     range: diagnostic.span && source ? spanRange(source, diagnostic.span) : startRange,
     severity: diagnostic.severity === "error" ? 1 : 2,
     code: diagnostic.code,
     source: "wm-mini",
     message: diagnostic.message,
-    relatedInformation: diagnostic.related?.map((related) => ({
-      location: {
-        uri,
-        range: related.span && source ? spanRange(source, related.span) : startRange,
-      },
-      message: related.message,
-    })),
+    relatedInformation: relatedInformation?.length ? relatedInformation : undefined,
   };
 }
 
@@ -121,6 +127,21 @@ function errorLocation(error: unknown): PeggyLocation | undefined {
   const location = (error as { location?: unknown }).location;
   if (!location || typeof location !== "object") return undefined;
   return location as PeggyLocation;
+}
+
+function isValidRange(range: LspRange): boolean {
+  const positions = [range.start, range.end];
+  if (positions.some((position) => !Number.isInteger(position.line) || !Number.isInteger(position.character))) {
+    return false;
+  }
+  if (positions.some((position) => position.line < 0 || position.character < 0)) {
+    return false;
+  }
+  if (range.end.line < range.start.line) return false;
+  if (range.end.line === range.start.line && range.end.character < range.start.character) {
+    return false;
+  }
+  return true;
 }
 
 function canonicalPath(path: string, sourceOverrides: Map<string, string>): string {

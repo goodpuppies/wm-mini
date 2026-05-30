@@ -152,6 +152,84 @@ let bad = sumList(Cons(1, Empty));
   });
 });
 
+Deno.test("lsp validation localizes recursive mismatches at first tuple-shape divergence", async () => {
+  const dir = await Deno.makeTempDir();
+  const main = `${dir}/main.wm`;
+  const source = `
+type List<T> = Nil | Cons<T, List<T>>;
+
+let rec foldLeft = (fn, num, list) => {
+  let rec inner = (fn, acc, list) => {
+    match(list) {
+      [] => {acc},
+      [head, ..tail] => {
+        inner(fn, fn(acc, head), tail)
+      }
+    }
+  };
+  inner(fn, num, list)
+};
+
+let rec sumList = (list) => {
+  foldLeft((a,b)=> {a+b}, list)
+};
+`;
+  await Deno.writeTextFile(main, source);
+
+  const diagnostics = await diagnosticsForPath(
+    await validateUri(pathToFileUri(main), new Map()),
+    main,
+  );
+  assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
+  assertEquals(diagnostics?.[0].range.start, {
+    line: 16,
+    character: 2,
+  });
+  assertEquals(
+    diagnostics?.[0].relatedInformation?.find((item) => item.message.startsWith("callee foldLeft"))
+      ?.location.range.start,
+    {
+      line: 16,
+      character: 2,
+    },
+  );
+});
+
+Deno.test("lsp validation localizes missing recursive tuple args at inner callsite", async () => {
+  const dir = await Deno.makeTempDir();
+  const main = `${dir}/main.wm`;
+  const source = `
+type List<T> = Nil | Cons<T, List<T>>;
+
+let rec foldLeft = (fn, list) => {
+  let rec inner = (fn, acc, list) => {
+    match(list) {
+      [] => {acc},
+      [head, ..tail] => {
+        inner(fn, fn(acc, head), tail)
+      }
+    }
+  };
+  inner(fn)
+};
+
+let rec sumList = (list) => {
+  foldLeft((a,b)=> {a+b}, list)
+};
+`;
+  await Deno.writeTextFile(main, source);
+
+  const diagnostics = await diagnosticsForPath(
+    await validateUri(pathToFileUri(main), new Map()),
+    main,
+  );
+  assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
+  assertEquals(diagnostics?.[0].range.start, {
+    line: 12,
+    character: 2,
+  });
+});
+
 Deno.test("lsp validation explains call argument expected and callee types", async () => {
   const dir = await Deno.makeTempDir();
   const main = `${dir}/main.wm`;

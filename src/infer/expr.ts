@@ -25,6 +25,7 @@ import {
   type TypeVarScope,
   VoidTy,
 } from "../types.ts";
+import type { Ty as TyNode } from "../types.ts";
 import { isDecl } from "./ast_utils.ts";
 import { inferDecl } from "./decl.ts";
 import { assertEqualityType } from "./equality.ts";
@@ -222,6 +223,7 @@ function inferCall(
   if (calleeFn.tag === "fn" && calleeFn.params.length === 1) {
     const argExpr = expr.args.length === 1 ? expr.args[0] : expr;
     const calleeRelated = callCalleeRelated(expr.callee, calleeFn);
+    const callDepth = maxCallDepth([...calleeRelated, ...calleeProvenance]) + 1;
     constrainAt(
       calleeFn.params[0],
       arg,
@@ -234,10 +236,14 @@ function inferCall(
         node: expr.node,
         span: expr.node?.span,
         primary: true,
+        expectedCallTupleShape: callArity(calleeFn.params[0]),
+        actualCallTupleShape: callArity(arg),
+        callDepth,
       },
     );
     constrainAt(result, calleeFn.result, expr);
   } else {
+    const callDepth = maxCallDepth([...callCalleeRelated(expr.callee, callee), ...calleeProvenance]) + 1;
     constrainAt(
       callee,
       fn([arg], result),
@@ -250,10 +256,24 @@ function inferCall(
         node: expr.node,
         span: expr.node?.span,
         primary: true,
+        expectedCallTupleShape: 1,
+        actualCallTupleShape: 1,
+        callDepth,
       },
     );
   }
   return result;
+}
+
+function callArity(type: TyNode): number {
+  const t = prune(type);
+  if (t.tag === "prim" && t.name === "Void") return 0;
+  if (t.tag === "tuple") return t.items.length;
+  return 1;
+}
+
+function maxCallDepth(related: FrontendRelatedDiagnostic[]): number {
+  return related.reduce((max, item) => Math.max(max, item.callDepth ?? 0), 0);
 }
 
 function inferMatch(
