@@ -47,10 +47,14 @@ export function emitCoreProgram(program: CoreProgram): string {
     `const __wm_js_to_js = (value, converter) => {
   if (converter === "option") return __wm_js_option_unwrap(value);
   if (typeof converter === "object" && converter.kind === "fn") {
-    return (...args) => __wm_js_to_js(
-      value(...args.map((arg, index) => __wm_js_to_workman(arg, converter.params[index] ?? "id"))),
-      converter.result,
-    );
+    return (...args) => {
+      const converted = args.map((arg, index) => __wm_js_to_workman(arg, converter.params[index] ?? "id"));
+      const workmanArg = converted.length === 0 ? undefined : converted.length === 1 ? converted[0] : __wm_tuple(...converted);
+      return __wm_js_to_js(
+        value(workmanArg),
+        converter.result,
+      );
+    };
   }
   return value;
 };`,

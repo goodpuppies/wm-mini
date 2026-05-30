@@ -1,46 +1,24 @@
--- Pure JS FFI HTTP server with no helper module.
--- Uses Reflect.get to read JS properties and Reflect.construct to call constructors,
--- because the FFI runtime calls `fn(...args)` instead of `new fn(...args)`.
+-- HTTP server using the wm-mini router library
 
 from js.global("Deno") import { serve };
-from js.global("Reflect") import { 
-  get: (t, String)=> String,
-  construct: (String, Js.Value)=> t
-};
-from js.global("globalThis") import { globalThis: Js.Value };
 from js.global("console") import { log };
 from js.global("Date") import { Date as dateString: () => String };
+from "./http.wm" import { get, response, dispatch };
 
-let handler = (req) => {
-  let method = get(req, "method");
-  let urlObj = (get(globalThis, "URL"),
-    JSON[get(req, "url")]
-  ) :> construct;
-  let path = get(urlObj, "pathname");
-  let response = get(globalThis, "Response");
-  let now = dateString();
-
-  if (method == "GET") {
-    match(path) {
-      "/" => {
-        construct(response, JSON["Hello from Workman!", JSON{status: 200}])
-      },
-      "/health" => {
-        construct(response, JSON["{\"status\":\"ok\"}", JSON{status: 200}])
-      },
-      "/time" => {
-        construct(response, JSON["{\"time\":\"" ++ now ++ "\"}", JSON{status: 200}])
-      },
-      _ => {
-        construct(response, JSON["Not Found", JSON{status: 404}])
-      }
-    }
-  } else {
-    construct(response, JSON["Method Not Allowed", JSON{status: 405}])
-  }
-};
+let routes = [
+  get("/", (req) => {
+    response("Hello from Workman!", JSON{status: 200})
+  }),
+  get("/health", (req) => {
+    response("{\"status\":\"ok\"}", JSON{status: 200})
+  }),
+  get("/time", (req) => {
+    let now = dateString();
+    response("{\"time\":\"" ++ now ++ "\"}", JSON{status: 200})
+  })
+];
 
 let main = () => {
   log("Starting server on http://127.0.0.1:8080");
-  serve(handler);
+  serve(dispatch(routes));
 };

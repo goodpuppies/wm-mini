@@ -1,0 +1,52 @@
+-- HTTP server helpers for wm-mini
+
+from js.global("Reflect") import {
+  get as jsGet: (t, String) => String,
+  construct: (String, Js.Value)=> t
+};
+from js.global("globalThis") import { globalThis: Js.Value };
+
+export record Route = {
+  method: String,
+  path: String,
+  handler: (Js.Value) => Js.Value
+};
+
+export let get = (path, handler) => {
+  .{ method = "GET", path = path, handler = handler }
+};
+
+export let response = (body:String, init) => {
+  let ctor = jsGet(globalThis, "Response");
+  construct(ctor, JSON[body, init])
+};
+
+let rec findHandler = (routes, method, path) => {
+  match(routes) {
+    [] => { None },
+    [route, ..rest] => {
+      if (route.method == method && route.path == path) {
+        Some(route.handler)
+      } else {
+        findHandler(rest, method, path)
+      }
+    }
+  }
+};
+
+export let dispatch = (routes) => {
+  (req, info) => {
+    let method = jsGet(req, "method");
+    let urlStr = jsGet(req, "url");
+    let urlObj = construct(jsGet(globalThis, "URL"), JSON[urlStr]);
+    let path = jsGet(urlObj, "pathname");
+    let handler = findHandler(routes, method, path);
+    match(handler) {
+      Some(h) => { h(req) },
+      None => {
+        let notFound = jsGet(globalThis, "Response");
+        construct(notFound, JSON["Not Found", JSON{status: 404}])
+      }
+    }
+  }
+};
