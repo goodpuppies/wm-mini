@@ -347,6 +347,8 @@ function emitExpr(expr: CoreExpr): string {
       return `((__v) => {\n${emitArmBody(expr.arms, "__v", "non-exhaustive match")}\n})(${
         emitExpr(expr.value)
       })`;
+    case "CorePanic":
+      return `__wm_fail("Panic", ${emitExpr(expr.message)})`;
     case "CoreBlock":
       return `(() => {\n${expr.items.map(emitBlockItem).join("\n")}\nreturn ${
         emitExpr(expr.result)

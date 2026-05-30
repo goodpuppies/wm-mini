@@ -76,6 +76,7 @@ export type CoreExpr =
   | { kind: "CoreApp"; callee: CoreExpr; arg: CoreExpr; node?: AstNode }
   | { kind: "CoreIf"; cond: CoreExpr; thenExpr: CoreExpr; elseExpr: CoreExpr; node?: AstNode }
   | { kind: "CoreMatch"; value: CoreExpr; arms: CoreMatchArm[]; node?: AstNode }
+  | { kind: "CorePanic"; message: CoreExpr; node?: AstNode }
   | { kind: "CoreBlock"; items: (CoreDecl | CoreExpr)[]; result: CoreExpr; node?: AstNode };
 
 export type CoreRecordExprField = {

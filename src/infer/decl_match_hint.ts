@@ -38,6 +38,8 @@ export function findAccidentalMatchFnInFunction(
       if (valueHit) return valueHit;
       return expr.arms.map((arm) => findAccidentalMatchFnInFunction(arm.body)).find((hit) => hit !== undefined);
     }
+    case "Panic":
+      return findAccidentalMatchFnInFunction(expr.message);
     case "Binary":
       return findAccidentalMatchFnInFunction(expr.left) ?? findAccidentalMatchFnInFunction(expr.right);
     case "Unary":

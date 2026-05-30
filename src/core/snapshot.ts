@@ -98,6 +98,8 @@ function showExpr(expr: CoreExpr): string {
       return `match ${showExpr(expr.value)} { ${
         expr.arms.map((arm) => `${showPattern(arm.pattern)} => ${showExpr(arm.body)}`).join(" | ")
       } }`;
+    case "CorePanic":
+      return `Panic(${showExpr(expr.message)})`;
     case "CoreBlock":
       return `{ ${
         [

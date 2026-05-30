@@ -164,6 +164,13 @@ function inferExprInner(
     case "Match":
       t = inferMatch(expr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
       break;
+    case "Panic":
+      constrain(
+        inferExpr(expr.message, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+        StringTy,
+      );
+      t = fresh();
+      break;
     case "Block":
       t = inferBlock(expr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
       break;

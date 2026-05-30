@@ -31,6 +31,24 @@ Deno.test("rejects type errors", async () => {
   );
 });
 
+Deno.test("Panic acts as an escape hatch in any type context", async () => {
+  await checkSource(`
+    type Option<T> = None | Some<T>;
+    let unwrapOrPanic = (opt) => {
+      match(opt) {
+        Some(x) => { x },
+        None => { Panic("Expected a value") },
+      }
+    };
+    let n: Number = unwrapOrPanic(Some(1));
+  `);
+});
+
+Deno.test("compiled Panic emits runtime Panic failure", async () => {
+  const js = await compile('let crash = Panic("boom");');
+  assertStringIncludes(js, '__wm_fail("Panic", "boom")');
+});
+
 Deno.test("reports inferred principal type shapes for core bindings", async () => {
   const result = await checkSource(`
     let id = (x) => { x };

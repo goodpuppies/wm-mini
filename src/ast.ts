@@ -63,6 +63,7 @@ export type Expr =
   | Located<{ kind: "Call"; callee: Expr; args: Expr[] }>
   | Located<{ kind: "If"; cond: Expr; thenExpr: Expr; elseExpr: Expr }>
   | Located<{ kind: "Match"; value: Expr; arms: MatchArm[] }>
+  | Located<{ kind: "Panic"; message: Expr }>
   | Located<{ kind: "Block"; items: (Decl | Expr)[]; result: Expr }>
   | Located<{ kind: "Binary"; op: string; left: Expr; right: Expr }>
   | Located<{ kind: "Unary"; op: string; value: Expr }>;

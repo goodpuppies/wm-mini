@@ -346,6 +346,7 @@ function isNonExpansive(expr: Expr, env: Env): boolean {
     case "Void":
     case "Var":
     case "Lambda":
+    case "Panic":
       return true;
     case "Tuple":
       return expr.items.every((item) => isNonExpansive(item, env));

@@ -158,6 +158,12 @@ function coreExprFromSurface(expr: Expr): CoreExpr {
         arms: expr.arms.map(coreMatchArmFromSurface),
         node: expr.node,
       };
+    case "Panic":
+      return {
+        kind: "CorePanic",
+        message: coreExprFromSurface(expr.message),
+        node: expr.node,
+      };
     case "Block":
       if (expr.items.length === 0) return coreExprFromSurface(expr.result);
       return {

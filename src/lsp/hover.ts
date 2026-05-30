@@ -138,6 +138,8 @@ function collectExpr(expr: Expr): Target[] {
       ];
     case "Match":
       return [...own, ...collectExpr(expr.value), ...expr.arms.flatMap(collectArm)];
+    case "Panic":
+      return [...own, ...collectExpr(expr.message)];
     case "Block":
       return [
         ...own,

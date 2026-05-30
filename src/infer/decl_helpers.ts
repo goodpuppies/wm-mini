@@ -55,6 +55,8 @@ export function hasUnguardedRecursiveRef(
     case "Match":
       return hasUnguardedRecursiveRef(expr.value, names, guarded) ||
         expr.arms.some((arm) => hasUnguardedRecursiveRef(arm.body, names, guarded));
+    case "Panic":
+      return hasUnguardedRecursiveRef(expr.message, names, guarded);
     case "Block":
       return hasUnguardedRecursiveBlockRef(expr, names, guarded);
     case "Binary":

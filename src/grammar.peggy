@@ -195,7 +195,11 @@ Postfix = head:Primary tail:(_ "(" _ args:ArgList? _ ")" { return args ?? []; })
   { return tail.reduce((callee, args) => at({ kind: "Call", callee, args }, location()), head); }
 
 Primary
-  = Float / Int / String / Bool / Void / JsonExpr / RecordExpr / ListExpr / TupleOrGroup / Block / v:LongName { return at({ kind: "Var", name: v }, location()); }
+  = Float / Int / String / Bool / Void / PanicExpr / JsonExpr / RecordExpr / ListExpr / TupleOrGroup / Block / v:LongName { return at({ kind: "Var", name: v }, location()); }
+
+PanicExpr
+  = "Panic" !IdentPart _ "(" _ message:Expr _ ")"
+    { return at({ kind: "Panic", message }, location()); }
 
 JsonExpr
   = "JSON" !IdentPart _ "{" _ fields:JsonObjectFieldList? _ "}"

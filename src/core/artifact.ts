@@ -213,6 +213,9 @@ function resolveExprValues(expr: CoreExpr, env: ValueEnv, ids: CoreIdAllocator) 
         resolveExprValues(arm.body, armEnv, ids);
       });
       return;
+    case "CorePanic":
+      resolveExprValues(expr.message, env, ids);
+      return;
     case "CoreBlock": {
       let blockEnv = new Map(env);
       for (const item of expr.items) {
@@ -388,6 +391,9 @@ function resolveExprConstructors(expr: CoreExpr, env: Map<string, CtorId>) {
         resolvePatternConstructors(arm.pattern, env);
         resolveExprConstructors(arm.body, env);
       });
+      return;
+    case "CorePanic":
+      resolveExprConstructors(expr.message, env);
       return;
     case "CoreBlock":
       expr.items.forEach((item) => {

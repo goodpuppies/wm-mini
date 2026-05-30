@@ -49,7 +49,7 @@ export function prepareFfiElaboration(module: Module): FfiElaboration {
       continue;
     }
     const rewritten = rewriteDeclCalls(decl, bindings, selected, refs, resultRefs);
-    rememberLetRefs(rewritten, bindings, resultRefs);
+    rememberLetRefs(rewritten, bindings, refs, resultRefs);
     rewrittenDecls.push(rewritten);
   }
   const decls = [
@@ -314,6 +314,11 @@ function rewriteExprCalls(
         value: rewriteExprCalls(expr.value, bindings, selected, refs, resultRefs),
         arms: rewriteMatchArms(expr, bindings, selected, refs, resultRefs),
       };
+    case "Panic":
+      return {
+        ...expr,
+        message: rewriteExprCalls(expr.message, bindings, selected, refs, resultRefs),
+      };
     case "Block":
       return rewriteBlock(expr, bindings, selected, refs, resultRefs);
     case "Binary":
@@ -348,7 +353,7 @@ function rewriteBlock(
     const rewritten = isDecl(item)
       ? rewriteDeclCalls(item, bindings, selected, localRefs, localResultRefs)
       : rewriteExprCalls(item, bindings, selected, localRefs, localResultRefs);
-    if (isDecl(rewritten)) rememberLetRefs(rewritten, bindings, localResultRefs);
+    if (isDecl(rewritten)) rememberLetRefs(rewritten, bindings, localRefs, localResultRefs);
     return rewritten;
   });
   return {
@@ -440,13 +445,16 @@ function prependReceiver(type: TypeExpr): TypeExpr {
 function rememberLetRefs(
   decl: Decl,
   bindings: Map<string, FfiBinding>,
+  refs: Map<string, JsTypeRef>,
   resultRefs: Map<string, JsTypeRef>,
 ) {
   if (decl.kind !== "LetDecl") return;
   for (const binding of decl.bindings) {
     if (binding.pattern.kind !== "PVar") continue;
     const ref = resultRefForExpr(binding.value, bindings, resultRefs);
-    if (ref) resultRefs.set(binding.pattern.name, ref);
+    if (!ref) continue;
+    refs.set(binding.pattern.name, ref);
+    resultRefs.set(binding.pattern.name, ref);
   }
 }
 
@@ -466,7 +474,28 @@ function resultRefForExpr(
   resultRefs: Map<string, JsTypeRef>,
 ): JsTypeRef | undefined {
   if (expr.kind === "Var") return resultRefs.get(expr.name);
-  return variantFromCall(expr, bindings)?.resultRef;
+  const callRef = variantFromCall(expr, bindings)?.resultRef;
+  if (callRef) return callRef;
+  if (expr.kind !== "Match") return undefined;
+  const matchedRef = resultRefForExpr(expr.value, bindings, resultRefs);
+  if (!matchedRef) return undefined;
+  return matchPassThroughsOkPayload(expr) ? matchedRef : undefined;
+}
+
+function matchPassThroughsOkPayload(expr: Extract<Expr, { kind: "Match" }>): boolean {
+  return expr.arms.some((arm) => {
+    const bodyVar = passThroughVar(arm.body);
+    if (!bodyVar) return false;
+    return okPayloadBinders(arm.pattern).includes(bodyVar);
+  });
+}
+
+function passThroughVar(expr: Expr): string | undefined {
+  if (expr.kind === "Var") return expr.name;
+  if (expr.kind === "Block" && expr.items.length === 0 && expr.result.kind === "Var") {
+    return expr.result.name;
+  }
+  return undefined;
 }
 
 function okPayloadBinders(pattern: Pattern): string[] {

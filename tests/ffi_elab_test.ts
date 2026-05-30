@@ -79,6 +79,31 @@ Deno.test("FFI elaboration rewrites reflected receiver prototype calls", async (
   );
 });
 
+Deno.test("FFI elaboration preserves receiver refs through match unwrapping", async () => {
+  const module = await parse(`
+    from js.module("node:child_process") import { spawn };
+    let proc = match(spawn("cmd")) {
+      Ok(p) => { p },
+      Err(_) => { Panic("spawn failed") },
+    };
+    let main = () => {
+      proc.stdout.on("data", (chunk) => { print(chunk) })
+    };
+  `);
+
+  const ffi = prepareFfiElaboration(module);
+  const receiverImport = ffi.module.decls.find((decl) =>
+    decl.kind === "JsImportDecl" && decl.target.kind === "JsReceiver"
+  );
+
+  assertEquals(
+    receiverImport?.kind === "JsImportDecl" && receiverImport.target.kind === "JsReceiver"
+      ? receiverImport.target.path
+      : undefined,
+    ["stdout", "on"],
+  );
+});
+
 Deno.test("HM inference rejects unelaborated reflected JS imports", async () => {
   const module = await parse(`
     from js.global("Math") import * as Math;

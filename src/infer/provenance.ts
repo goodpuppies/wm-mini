@@ -199,6 +199,9 @@ function visitChildren(node: Expr, visit: (node: Expr) => void) {
       visit(node.value);
       node.arms.forEach((arm) => visit(arm.body));
       break;
+    case "Panic":
+      visit(node.message);
+      break;
     case "Block":
       node.items.forEach((item) => {
         if (!isDecl(item)) visit(item);
