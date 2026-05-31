@@ -49,7 +49,9 @@ export function emitCoreProgram(program: CoreProgram): string {
   if (typeof converter === "object" && converter.kind === "fn") {
     return (...args) => {
       const converted = args.map((arg, index) => __wm_js_to_workman(arg, converter.params[index] ?? "id"));
-      const workmanArg = converted.length === 0 ? undefined : converted.length === 1 ? converted[0] : __wm_tuple(...converted);
+      const expected = converter.params.length;
+      const limited = converted.slice(0, expected);
+      const workmanArg = limited.length === 0 ? undefined : limited.length === 1 ? limited[0] : __wm_tuple(...limited);
       return __wm_js_to_js(
         value(workmanArg),
         converter.result,
