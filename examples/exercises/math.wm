@@ -17,29 +17,23 @@ export let divBy2 = (i) => {
 };
 
 let rec foldLeft = (fn, acc, list) => {
-  let rec inner = (fn, acc, list) => {
-    match(list) {
-      [] => {acc},
-      [head, ..tail] => {
-        inner(fn, fn(acc, head), tail)
-      }
+  match(list) {
+    [] => {acc},
+    [head, ..tail] => {
+      foldLeft(fn, fn(acc, head), tail)
     }
-  };
-  inner(fn, acc, list)
+  }
 };
 
 export let rec sumList = (list) => {
   foldLeft((a,b)=> {a+b}, 0, list)
 };
 
-
-export let rec isEvenLenght = (list) => {
-  match(list) {
-    [] => {true},
-    [head] => {false},
-    [head, cons, ..tail] => { 
-      isEvenLenght(tail)
-    }
+export let rec isEvenLenght = match(list) => {
+  [] => {true},
+  [head] => {false},
+  [head, cons, ..tail] => { 
+    isEvenLenght(tail)
   }
 };
 
@@ -51,12 +45,10 @@ export let compareN = (a,b) => {
   else {Less}
 };
 
-let rec mapList = (fn, list) => {
-  match(list) {
-    [] => { [] },
-    [head, ..tail] => {
-      [fn(head), ..mapList(fn, tail)]
-    }
+let rec mapList = match(fn, list) => {
+  (_, []) => { [] },
+  (_, [head, ..tail]) => {
+    [fn(head), ..mapList(fn, tail)]
   }
 };
 

@@ -7,7 +7,7 @@ export type Ty =
   | { tag: "prim"; name: string }
   | { tag: "fn"; params: Ty[]; result: Ty }
   | { tag: "tuple"; items: Ty[] }
-  | { tag: "named"; id: number; name: string; args: Ty[] };
+  | { tag: "named"; id: number; name: string; args: Ty[]; foreign?: boolean };
 
 export type Constraint = { kind: "Eq"; left: Ty; right: Ty };
 export type IdentifierStatus = "value" | "constructor";
@@ -34,6 +34,7 @@ export type TypeInfo = {
   arity: number;
   basis?: boolean;
   basisConstructors?: string[];
+  foreign?: boolean;
   alias?: Ty;
   aliasParams?: number[];
   recordFields?: RecordFieldInfo[];
@@ -61,6 +62,7 @@ export const named = (info: TypeInfo, args: Ty[] = []): Ty => ({
   id: info.id,
   name: info.name,
   args,
+  foreign: info.foreign,
 });
 export const freshTypeInfo = (name: string, arity: number): TypeInfo => ({
   id: nextType++,

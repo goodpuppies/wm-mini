@@ -46,7 +46,10 @@ export async function hoverAt(
     return schemeHover(target.value.name, result.env.get(target.value.name));
   }
 
-  if (target.kind === "decl" && target.value.kind === "TypeDecl") {
+  if (
+    target.kind === "decl" &&
+    (target.value.kind === "TypeDecl" || target.value.kind === "ForeignTypeDecl")
+  ) {
     return hoverCode(`type ${target.value.name}`);
   }
 
@@ -103,6 +106,7 @@ function collectDecl(decl: Decl): Target[] {
     case "LetDecl":
       return [...own, ...decl.bindings.flatMap(collectBinding)];
     case "TypeDecl":
+    case "ForeignTypeDecl":
     case "RecordDecl":
     case "ImportDecl":
     case "JsImportDecl":
@@ -125,6 +129,8 @@ function collectExpr(expr: Expr): Target[] {
       return [...own, ...expr.fields.flatMap(collectJsonObjectField)];
     case "JsonArray":
       return [...own, ...expr.items.flatMap(collectExpr)];
+    case "FfiGet":
+      return [...own, ...collectExpr(expr.receiver)];
     case "Lambda":
       return [...own, ...expr.params.flatMap(collectParam), ...collectExpr(expr.body)];
     case "Call":
@@ -211,7 +217,8 @@ function target(kind: Target["kind"], value: Decl | Expr | Pattern): Target[] {
 
 function isDecl(item: Decl | Expr): item is Decl {
   return item.kind === "ImportDecl" || item.kind === "LetDecl" ||
-    item.kind === "JsImportDecl" || item.kind === "RecordDecl" || item.kind === "TypeDecl";
+    item.kind === "JsImportDecl" || item.kind === "RecordDecl" || item.kind === "TypeDecl" ||
+    item.kind === "ForeignTypeDecl";
 }
 
 function labelExpr(expr: Expr): string {

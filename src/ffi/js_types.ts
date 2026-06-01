@@ -11,12 +11,18 @@ export type JsMemberType = {
 export type JsCallableVariant = {
   type: TypeExpr;
   resultRef?: JsTypeRef;
+  callbackParamRefs?: JsCallbackParamRefs[];
 };
 
 export type JsTypeRef = {
   key: string;
   source: string;
   expr: string;
+};
+
+export type JsCallbackParamRefs = {
+  argIndex: number;
+  params: JsTypeRef[];
 };
 
 export type JsCallArgHint =
@@ -94,6 +100,78 @@ export function jsModuleMember(specifier: string, name: string): JsMemberType | 
   return jsTargetMember(jsModuleSource(specifier), name);
 }
 
+export function jsGlobalValueRef(name: string): JsTypeRef {
+  return {
+    key: `global-value:${name}`,
+    source: `const __wm_ref_${sanitize(name)} = ${name};`,
+    expr: `__wm_ref_${sanitize(name)}`,
+  };
+}
+
+export function jsGlobalTypeRef(name: string): JsTypeRef {
+  return typeRefFromSource(`global-type:${name}`, "", name);
+}
+
+export function jsGlobalMemberTypeRef(path: string, name: string): JsTypeRef {
+  const target = jsGlobalSource(path);
+  return typeRefFromSource(`global-type:${path}.${name}`, target.source, `${path}.${name}`);
+}
+
+export function jsModuleTypeRef(specifier: string, name: string): JsTypeRef {
+  const target = jsModuleSource(specifier);
+  return typeRefFromSource(
+    `module-type:${specifier}.${name}`,
+    target.source,
+    `__wm_target.${name}`,
+  );
+}
+
+export function jsConstructMember(ref: JsTypeRef): JsMemberType | undefined {
+  const key = `${ref.key}.new`;
+  if (memberCache.has(key)) return memberCache.get(key);
+  const reflected = reflectSource(
+    key,
+    ref.source,
+    (checker, sourceFile) => {
+      const ctor = findVariable(sourceFile, ref.expr)?.initializer ??
+        findDeclaredValue(sourceFile, ref.expr);
+      if (!ctor) return undefined;
+      const variants = dedupeVariants(
+        checker.getTypeAtLocation(ctor).getConstructSignatures().flatMap((signature, index) =>
+          functionVariantsFromSignature(
+            checker,
+            signature,
+            (paramIndex, callbackParamIndex, callbackParamType) =>
+              typeRefFromTsType(
+                `${key}:callback:${index}:${paramIndex}:${callbackParamIndex}`,
+                checker,
+                callbackParamType,
+                ref.source,
+              ),
+          ).map((variant) => ({
+            ...variant,
+            resultRef: constructReturnRef(
+              `${key}:return:${index}`,
+              ref.source,
+              ref.expr,
+              signature,
+            ),
+          }))
+        ),
+      );
+      if (variants.length === 0) return undefined;
+      return {
+        name: "new",
+        type: variants[0].type,
+        overloads: variants.length > 1 ? variants.map((variant) => variant.type) : undefined,
+        variants,
+      };
+    },
+  );
+  memberCache.set(key, reflected);
+  return reflected;
+}
+
 export function jsRefMember(ref: JsTypeRef, path: string[]): JsMemberType | undefined {
   const key = `${ref.key}.${path.join(".")}`;
   if (memberCache.has(key)) return memberCache.get(key);
@@ -104,13 +182,30 @@ export function jsRefMember(ref: JsTypeRef, path: string[]): JsMemberType | unde
     (checker, sourceFile) => {
       const member = findVariable(sourceFile, "__wm_member")?.initializer;
       if (!member) return undefined;
+      const propertyType = checker.getTypeAtLocation(member);
       const mapped = jsMemberTypeFromTsType(
         checker,
-        checker.getTypeAtLocation(member),
+        propertyType,
         (index) =>
           returnTypeRef(`${key}:return:${index}`, ref.source, `ReturnType<typeof ${access}>`),
+        (index, paramIndex, callbackParamIndex, callbackParamType) =>
+          typeRefFromTsType(
+            `${key}:callback:${index}:${paramIndex}:${callbackParamIndex}`,
+            checker,
+            callbackParamType,
+            ref.source,
+          ),
       );
-      return mapped ? { name: path.at(-1)!, ...mapped } : undefined;
+      if (mapped) return { name: path.at(-1)!, ...mapped };
+      const type = typeExprFromTsType(checker, propertyType) ?? name("Js.Value");
+      return {
+        name: path.at(-1)!,
+        type,
+        variants: [{
+          type,
+          resultRef: returnTypeRef(`${key}:property`, ref.source, `typeof ${access}`),
+        }],
+      };
     },
   );
   memberCache.set(key, reflected);
@@ -155,11 +250,13 @@ export function jsRefCallMember(
       const signature = checker.getResolvedSignature(call);
       if (!signature) return undefined;
       const type = functionTypeFromCall(checker, call, signature, args);
+      const callbackParamRefs = callbackParamRefsFromCall(checker, call, args);
       return {
         name: path.at(-1)!,
         type,
         variants: [{
           type,
+          callbackParamRefs,
           resultRef: returnTypeRef(
             `${key}:return`,
             `${ref.source}\n${argDecls}\nconst __wm_call_result = ${callExpr};`,
@@ -221,6 +318,13 @@ function jsTargetMember(target: JsReflectionSource, name: string): JsMemberType 
         checker.getTypeAtLocation(member),
         (index) =>
           returnTypeRef(`${key}:return:${index}`, target.source, `ReturnType<typeof ${access}>`),
+        (index, paramIndex, callbackParamIndex, callbackParamType) =>
+          typeRefFromTsType(
+            `${key}:callback:${index}:${paramIndex}:${callbackParamIndex}`,
+            checker,
+            callbackParamType,
+            target.source,
+          ),
       );
       return mapped ? { name, ...mapped } : undefined;
     },
@@ -310,6 +414,19 @@ function findVariable(sourceFile: ts.SourceFile, name: string): ts.VariableDecla
   return found;
 }
 
+function findDeclaredValue(sourceFile: ts.SourceFile, name: string): ts.Identifier | undefined {
+  let found: ts.Identifier | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isIdentifier(node) && node.text === name) {
+      found = node;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
 function findCallInitializer(
   sourceFile: ts.SourceFile,
   name: string,
@@ -327,11 +444,23 @@ function jsMemberTypeFromTsType(
   checker: ts.TypeChecker,
   type: ts.Type,
   resultRef?: (index: number, signature: ts.Signature) => JsTypeRef | undefined,
+  callbackParamRef?: (
+    signatureIndex: number,
+    paramIndex: number,
+    callbackParamIndex: number,
+    callbackParamType: ts.Type,
+    signature: ts.Signature,
+  ) => JsTypeRef | undefined,
 ): Omit<JsMemberType, "name"> | undefined {
   const variants = dedupeVariants(
     type.getCallSignatures().flatMap((signature, index) =>
-      functionTypesFromSignature(checker, signature).map((type) => ({
-        type,
+      functionVariantsFromSignature(
+        checker,
+        signature,
+        (paramIndex, callbackParamIndex, callbackParamType) =>
+          callbackParamRef?.(index, paramIndex, callbackParamIndex, callbackParamType, signature),
+      ).map((variant) => ({
+        ...variant,
         resultRef: resultRef?.(index, signature),
       }))
     ),
@@ -350,6 +479,11 @@ function typeExprFromTsType(
   type: ts.Type,
   position: "param" | "result" = "result",
 ): TypeExpr | undefined {
+  if (
+    position === "param" && /\b(BodyInit|XMLHttpRequestBodyInit)\b/.test(checker.typeToString(type))
+  ) {
+    return name("String");
+  }
   const nullish = nullishUnionParts(type);
   if (nullish) {
     const inner = nullish.value
@@ -358,7 +492,9 @@ function typeExprFromTsType(
     return option(inner);
   }
   if (type.isUnion()) {
+    if (position === "param" && type.types.some(isStringLike)) return name("String");
     if (type.types.some(isObjectLike)) {
+      if (position === "result" && type.types.every(isObjectLike)) return name("Js.Object");
       return position === "param" && type.types.some(isStringLike) && type.types
           .filter(isObjectLike)
           .every((item) => checker.typeToString(item) === "URL")
@@ -410,8 +546,25 @@ function functionTypeFromSignature(checker: ts.TypeChecker, signature: ts.Signat
 }
 
 function functionTypesFromSignature(checker: ts.TypeChecker, signature: ts.Signature): TypeExpr[] {
+  return functionVariantsFromSignature(checker, signature).map((variant) => variant.type);
+}
+
+function functionVariantsFromSignature(
+  checker: ts.TypeChecker,
+  signature: ts.Signature,
+  callbackParamRef?: (
+    paramIndex: number,
+    callbackParamIndex: number,
+    callbackParamType: ts.Type,
+  ) => JsTypeRef | undefined,
+): JsCallableVariant[] {
   const declaration = signature.getDeclaration();
-  type ReflectedParam = { type: TypeExpr; optional: boolean; rest: boolean };
+  type ReflectedParam = {
+    type: TypeExpr;
+    optional: boolean;
+    rest: boolean;
+    callbackRefs?: JsTypeRef[];
+  };
   const parameters: ReflectedParam[] = signature
     .getParameters()
     .flatMap((symbol, index): ReflectedParam[] => {
@@ -420,7 +573,12 @@ function functionTypesFromSignature(checker: ts.TypeChecker, signature: ts.Signa
       if (declarationParam?.dotDotDotToken) {
         const element = restElementType(checker, type) ?? checker.getAnyType();
         const mapped = paramTypeExpr(checker, element, index);
-        return [{ type: mapped, optional: false, rest: true }];
+        return [{
+          type: mapped,
+          optional: false,
+          rest: true,
+          callbackRefs: callbackRefsForParam(checker, element, index, callbackParamRef),
+        }];
       }
       const optional = !!declarationParam?.questionToken || !!declarationParam?.initializer;
       const mapped = stripOptionForOptional(paramTypeExpr(checker, type, index), optional);
@@ -428,6 +586,7 @@ function functionTypesFromSignature(checker: ts.TypeChecker, signature: ts.Signa
         type: mapped,
         optional,
         rest: false,
+        callbackRefs: callbackRefsForParam(checker, type, index, callbackParamRef),
       }];
     });
   const result = typeExprFromTsType(checker, checker.getReturnTypeOfSignature(signature)) ??
@@ -436,7 +595,7 @@ function functionTypesFromSignature(checker: ts.TypeChecker, signature: ts.Signa
   if (restIndex !== -1) {
     const fixed = parameters.slice(0, restIndex);
     const required = lastRequiredParameter(fixed) + 1;
-    const overloads: TypeExpr[] = [];
+    const overloads: JsCallableVariant[] = [];
     for (let count = required; count <= maxReflectedRestArity; count++) {
       const params: TypeExpr[] = [];
       for (let index = 0; index < Math.min(count, fixed.length); index++) {
@@ -445,16 +604,72 @@ function functionTypesFromSignature(checker: ts.TypeChecker, signature: ts.Signa
       for (let index = params.length; index < count; index++) {
         params.push(restSlotType(parameters[restIndex].type, index));
       }
-      overloads.push(fn(params, result));
+      overloads.push({
+        type: fn(params, result),
+        callbackParamRefs: callbackParamRefsForArity(parameters, count),
+      });
     }
     return overloads;
   }
   const required = lastRequiredParameter(parameters) + 1;
-  const overloads: TypeExpr[] = [];
+  const overloads: JsCallableVariant[] = [];
   for (let count = required; count <= parameters.length; count++) {
-    overloads.push(fn(parameters.slice(0, count).map((param) => param.type), result));
+    overloads.push({
+      type: fn(parameters.slice(0, count).map((param) => param.type), result),
+      callbackParamRefs: callbackParamRefsForArity(parameters, count),
+    });
   }
-  return overloads.length ? overloads : [fn([], result)];
+  return overloads.length ? overloads : [{ type: fn([], result) }];
+}
+
+function callbackRefsForParam(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  paramIndex: number,
+  callbackParamRef:
+    | ((
+      paramIndex: number,
+      callbackParamIndex: number,
+      callbackParamType: ts.Type,
+    ) => JsTypeRef | undefined)
+    | undefined,
+): JsTypeRef[] | undefined {
+  const signature = type.getCallSignatures()[0];
+  if (!signature) return undefined;
+  return signature.getParameters()
+    .map((symbol, callbackParamIndex) => {
+      const paramType = typeOfSymbol(checker, symbol) ?? checker.getAnyType();
+      return callbackParamRef?.(paramIndex, callbackParamIndex, paramType);
+    })
+    .filter((ref): ref is JsTypeRef => !!ref);
+}
+
+function callbackParamRefsForArity(
+  parameters: { callbackRefs?: JsTypeRef[] }[],
+  arity: number,
+): JsCallbackParamRefs[] | undefined {
+  const refs = parameters.slice(0, arity)
+    .map((param, argIndex) =>
+      param.callbackRefs?.length ? { argIndex, params: param.callbackRefs } : undefined
+    )
+    .filter((item): item is JsCallbackParamRefs => !!item);
+  return refs.length ? refs : undefined;
+}
+
+function callbackParamRefsFromCall(
+  checker: ts.TypeChecker,
+  call: ts.CallExpression,
+  args: JsCallArgHint[],
+): JsCallbackParamRefs[] | undefined {
+  const refs = call.arguments.map((arg, argIndex) => {
+    if (args[argIndex]?.kind !== "function" || !ts.isArrowFunction(arg)) return undefined;
+    const params = arg.parameters.map((param, callbackParamIndex) => {
+      const key = `call:${call.getStart()}:callback:${argIndex}:${callbackParamIndex}`;
+      return typeRefFromTsType(key, checker, checker.getTypeAtLocation(param));
+    });
+    return params.length ? { argIndex, params } : undefined;
+  }).filter((item): item is JsCallbackParamRefs => !!item);
+  return refs.length ? refs : undefined;
 }
 
 function paramTypeExpr(checker: ts.TypeChecker, type: ts.Type, index: number): TypeExpr {
@@ -466,6 +681,26 @@ function paramTypeExpr(checker: ts.TypeChecker, type: ts.Type, index: number): T
       typeExprFromTsType(checker, checker.getReturnTypeOfSignature(signature)) ?? name("Void"),
     );
   }
+  if (signature) return callbackFunctionTypeFromSignature(checker, signature);
+  return typeExprFromTsType(checker, type, "param") ?? name("Js.Value");
+}
+
+function callbackFunctionTypeFromSignature(
+  checker: ts.TypeChecker,
+  signature: ts.Signature,
+): TypeExpr {
+  const params = signature.getParameters().map((symbol, index) => {
+    const type = typeOfSymbol(checker, symbol) ?? checker.getAnyType();
+    return callbackParamTypeExpr(checker, type, index);
+  });
+  const result = typeExprFromTsType(checker, checker.getReturnTypeOfSignature(signature)) ??
+    name("Void");
+  return fn(params, result);
+}
+
+function callbackParamTypeExpr(checker: ts.TypeChecker, type: ts.Type, index: number): TypeExpr {
+  if (isAnyOrUnknown(type)) return varType(`a${index}`);
+  if (isObjectLike(type)) return name("Js.Object");
   return typeExprFromTsType(checker, type, "param") ?? name("Js.Value");
 }
 
@@ -555,6 +790,53 @@ function returnTypeRef(key: string, source: string, typeExpr: string): JsTypeRef
     source: `${source}\ntype ${typeName} = ${typeExpr};\ndeclare const ${expr}: ${typeName};`,
     expr,
   };
+}
+
+function typeRefFromTsType(
+  key: string,
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  source = "",
+): JsTypeRef {
+  const suffix = sanitize(key);
+  const typeName = `__wm_type_${suffix}`;
+  const expr = `__wm_ref_${suffix}`;
+  return {
+    key,
+    source: `${source}\ntype ${typeName} = ${
+      checker.typeToString(type)
+    };\ndeclare const ${expr}: ${typeName};`,
+    expr,
+  };
+}
+
+function typeRefFromSource(key: string, source: string, typeExpr: string): JsTypeRef {
+  const suffix = sanitize(key);
+  const typeName = `__wm_type_${suffix}`;
+  const expr = `__wm_ref_${suffix}`;
+  return {
+    key,
+    source: `${source}\ntype ${typeName} = ${typeExpr};\ndeclare const ${expr}: ${typeName};`,
+    expr,
+  };
+}
+
+function constructReturnRef(
+  key: string,
+  source: string,
+  ctorExpr: string,
+  signature: ts.Signature,
+): JsTypeRef {
+  const declaration = signature.getDeclaration();
+  const params =
+    declaration?.parameters.map((param, index) =>
+      param.dotDotDotToken ? `...__wm_arg_${index}: any[]` : `__wm_arg_${index}: any`
+    ).join(", ") ?? "";
+  const args =
+    declaration?.parameters.map((param, index) =>
+      param.dotDotDotToken ? `...__wm_arg_${index}` : `__wm_arg_${index}`
+    ).join(", ") ?? "";
+  return returnTypeRef(key, source, `ReturnType<() => InstanceType<typeof ${ctorExpr}>>`);
 }
 
 function propertyPath(base: string, path: string[]): string {

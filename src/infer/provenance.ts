@@ -27,7 +27,9 @@ export function constrainAt(
       message ? new Error(message()) : error,
       primary?.node ?? expr?.node,
       undefined,
-      primary ? dedupeRelated([...related, ...(reason && reason !== primary ? [reason] : [])]) : related,
+      primary
+        ? dedupeRelated([...related, ...(reason && reason !== primary ? [reason] : [])])
+        : related,
     );
   }
 }
@@ -42,7 +44,9 @@ function selectPrimaryCallsite(
   );
   if (calls.length > 0) {
     const byDepth = [...calls].sort((a, b) => (a.callDepth ?? 0) - (b.callDepth ?? 0));
-    const mismatch = byDepth.find((item) => item.expectedCallTupleShape !== item.actualCallTupleShape);
+    const mismatch = byDepth.find((item) =>
+      item.expectedCallTupleShape !== item.actualCallTupleShape
+    );
     if (mismatch) return mismatch;
     const targetShape = byDepth[0].actualCallTupleShape!;
     const boundary = byDepth.find((item) => item.actualCallTupleShape !== targetShape);
@@ -182,6 +186,9 @@ function visitChildren(node: Expr, visit: (node: Expr) => void) {
       break;
     case "JsonArray":
       node.items.forEach(visit);
+      break;
+    case "FfiGet":
+      visit(node.receiver);
       break;
     case "Lambda":
       visit(node.body);

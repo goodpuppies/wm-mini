@@ -20,7 +20,10 @@ import {
 } from "../types.ts";
 import { resultExpr } from "./ast_utils.ts";
 import { hasUnguardedRecursiveRef, referencesTypeName, rejectDuplicates } from "./decl_helpers.ts";
-import { findAccidentalMatchFnInFunction, hasTrailingStatementLikeResult } from "./decl_match_hint.ts";
+import {
+  findAccidentalMatchFnInFunction,
+  hasTrailingStatementLikeResult,
+} from "./decl_match_hint.ts";
 import { inferExpr } from "./expr.ts";
 import { isVectorExhaustive } from "./exhaustiveness.ts";
 import { addJsImport } from "./js_imports.ts";
@@ -55,6 +58,10 @@ export function inferDecl(
     addJsImport(env, typeEnv, decl);
     return;
   }
+  if (decl.kind === "ForeignTypeDecl") {
+    addForeignType(decl, typeEnv, exportableTypeIds);
+    return;
+  }
   if (decl.kind === "RecordDecl") {
     inferRecordDecl(decl, env, typeEnv, typeExports, exportableTypeIds);
     return;
@@ -75,6 +82,19 @@ export function inferDecl(
     exportableTypeIds,
     provenance,
   );
+}
+
+function addForeignType(
+  decl: Extract<Decl, { kind: "ForeignTypeDecl" }>,
+  typeEnv: TypeEnv,
+  exportableTypeIds: Set<number>,
+) {
+  const existing = typeEnv.get(decl.name);
+  if (existing && !existing.basis) throw new Error(`duplicate type declaration ${decl.name}`);
+  if (existing?.basis) throw new Error(`cannot shadow basis type ${decl.name} with foreign type`);
+  const info = { ...freshTypeInfo(decl.name, 0), foreign: true };
+  typeEnv.set(decl.name, info);
+  exportableTypeIds.add(info.id);
 }
 
 function inferRecordDecl(
@@ -428,21 +448,24 @@ function constrainBinding(
       const bodyResult = resultExpr(value.body);
       const accidentalMatchFn = findAccidentalMatchFnInFunction(value.body);
       const trailingStatementLikeResult = hasTrailingStatementLikeResult(value.body);
-      const listElementVsListHint = recursiveListElementVsListHint(expectedFn.result, actualFn.result, bodyResult);
+      const listElementVsListHint = recursiveListElementVsListHint(
+        expectedFn.result,
+        actualFn.result,
+        bodyResult,
+      );
       const actualResult = prune(actualFn.result);
       const resultProvenance = provenanceForType(expectedFn.result, provenance).map((item) => ({
         ...item,
         primary: false,
       }));
-      const primaryCallee =
-        resultProvenance.find((item) =>
-          item.message === "call argument" &&
-          item.expectedCallTupleShape !== undefined &&
-          item.actualCallTupleShape !== undefined &&
-          item.expectedCallTupleShape !== item.actualCallTupleShape
-        ) ??
-          resultProvenance.find((item) => item.message.startsWith(`callee ${name}:`)) ??
-          resultProvenance.find((item) => item.message.startsWith("callee "));
+      const primaryCallee = resultProvenance.find((item) =>
+        item.message === "call argument" &&
+        item.expectedCallTupleShape !== undefined &&
+        item.actualCallTupleShape !== undefined &&
+        item.expectedCallTupleShape !== item.actualCallTupleShape
+      ) ??
+        resultProvenance.find((item) => item.message.startsWith(`callee ${name}:`)) ??
+        resultProvenance.find((item) => item.message.startsWith("callee "));
       const prioritizedResultProvenance = primaryCallee
         ? resultProvenance.map((item) => item === primaryCallee ? { ...item, primary: true } : item)
         : resultProvenance;
@@ -455,12 +478,14 @@ function constrainBinding(
         ...(listElementVsListHint ? [listElementVsListHint] : []),
         ...(accidentalMatchFn
           ? [{
-            message: "HINT: found `match(...) => { ... }` inside function body; did you mean `match(...) { ... }`?",
+            message:
+              "HINT: found `match(...) => { ... }` inside function body; did you mean `match(...) { ... }`?",
             node: accidentalMatchFn.node,
             span: accidentalMatchFn.node?.span,
           }]
           : []),
-        ...((actualResult.tag === "prim" && actualResult.name === "Void" && trailingStatementLikeResult)
+        ...((actualResult.tag === "prim" && actualResult.name === "Void" &&
+            trailingStatementLikeResult)
           ? [{
             message: "HINT: returns Void; remove trailing `;` on last expression",
             node: bodyResult.node,
@@ -506,4 +531,3 @@ function recursiveListElementVsListHint(expected: Ty, actual: Ty, expr: Expr) {
   }
   return undefined;
 }
-

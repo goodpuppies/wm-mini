@@ -4,7 +4,17 @@ import type { BindingId } from "./ids.ts";
 import { basisCtorJsName, basisTypes } from "../basis.ts";
 import type { JsImportSpec, TypeExpr } from "../ast.ts";
 
-const reserved = new Set(["const", "let", "function", "return", "if", "else", "class", "void", "globalThis"]);
+const reserved = new Set([
+  "const",
+  "let",
+  "function",
+  "return",
+  "if",
+  "else",
+  "class",
+  "void",
+  "globalThis",
+]);
 
 export function emitCoreProgram(program: CoreProgram): string {
   const entry = program.modules.get(program.entry)!;
@@ -31,6 +41,7 @@ export function emitCoreProgram(program: CoreProgram): string {
   const value = owner?.[path[path.length - 1]];
   return typeof value === "function" ? value.apply(owner, args) : value;
 };`,
+    `const __wm_js_construct = (path) => (...args) => new (__wm_js_global(path))(...args);`,
     `const __wm_js_call = (fn, arg) => __wm_is_tuple(arg) ? fn(...arg) : fn(arg);`,
     `const __wm_js_option_wrap = (value) => value == null ? __wm_basis_None : __wm_basis_Some(value);`,
     `const __wm_js_option_unwrap = (value) => value?.ctor === -1 ? undefined : value?.ctor === -2 ? value.args[0] : value;`,
@@ -395,11 +406,15 @@ type JsTargetRef = { kind: "global"; path: string; setup?: string } | {
 } | {
   kind: "receiver";
   path: string[];
+} | {
+  kind: "constructor";
+  path: string;
 };
 
 let jsImportTemp = 0;
 
 function jsTargetRef(target: Extract<CoreDecl, { kind: "CoreJsImport" }>["target"]): JsTargetRef {
+  if (target.kind === "JsGlobalRoot") return { kind: "global", path: "" };
   if (target.kind === "JsGlobal") return { kind: "global", path: target.path };
   if (target.kind === "JsModule") {
     const name = `__wm_js_module_${jsImportTemp++}`;
@@ -410,6 +425,7 @@ function jsTargetRef(target: Extract<CoreDecl, { kind: "CoreJsImport" }>["target
     };
   }
   if (target.kind === "JsReceiver") return { kind: "receiver", path: target.path };
+  if (target.kind === "JsConstructor") return { kind: "constructor", path: target.path };
   throw new Error("unsupported JS import target");
 }
 
@@ -421,6 +437,7 @@ function jsMemberRef(target: JsTargetRef, member: string): string {
     return `__wm_js_member(${JSON.stringify(target.path)} + "." + ${member})`;
   }
   if (target.kind === "module") return `__wm_js_member_obj(${target.name}, ${member})`;
+  if (target.kind === "constructor") return `__wm_js_construct(${JSON.stringify(target.path)})`;
   return `__wm_js_receiver_member(${JSON.stringify(target.path)})`;
 }
 

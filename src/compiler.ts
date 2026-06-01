@@ -6,9 +6,14 @@ import {
 } from "./core/artifact.ts";
 import { emitCoreProgram } from "./core/emit_js.ts";
 import { coreFromSurface } from "./core/from_surface.ts";
-import { prepareFfiElaboration } from "./ffi/elab.ts";
+import { prepareFfiElaboration, resolveDelayedFfiElaboration } from "./ffi/elab.ts";
 import { inferModule, inferModuleWithSteps, type InferResult, type InferStep } from "./infer.ts";
-import { loadModuleGraph, type ModuleGraph, type ModuleGraphOptions, type VirtualFileSystem } from "./module_graph.ts";
+import {
+  loadModuleGraph,
+  type ModuleGraph,
+  type ModuleGraphOptions,
+  type VirtualFileSystem,
+} from "./module_graph.ts";
 import { parse, type Surface } from "./parser.ts";
 
 export type CompileOptions = ModuleGraphOptions;
@@ -17,9 +22,14 @@ export type VirtualCompileOptions = CompileOptions & {
   virtualFs: VirtualFileSystem;
 };
 
-export async function compile(source: string, options: CompileOptions = {}, filePath?: string): Promise<string> {
-  const ast = prepareFfiElaboration(await parse(source, options.surface, filePath)).module;
-  const result = checkModuleWithoutImports(ast);
+export async function compile(
+  source: string,
+  options: CompileOptions = {},
+  filePath?: string,
+): Promise<string> {
+  const { module: ast, result } = checkPreparedModuleWithoutImports(
+    await parse(source, options.surface, filePath),
+  );
   return emitCoreProgram(coreProgramFromModule(ast, result));
 }
 
@@ -50,9 +60,7 @@ export async function checkSource(
   options: CheckSourceOptions = {},
   filePath?: string,
 ): Promise<InferResult> {
-  return checkModuleWithoutImports(
-    prepareFfiElaboration(await parse(source, options.surface, filePath)).module,
-  );
+  return checkPreparedModuleWithoutImports(await parse(source, options.surface, filePath)).result;
 }
 
 export async function coreSource(
@@ -60,8 +68,10 @@ export async function coreSource(
   options: CheckSourceOptions = {},
   filePath?: string,
 ): Promise<CoreSourceResult> {
-  const module = prepareFfiElaboration(await parse(source, options.surface, filePath)).module;
-  return { module: coreFromSurface(module), result: checkModuleWithoutImports(module) };
+  const { module, result } = checkPreparedModuleWithoutImports(
+    await parse(source, options.surface, filePath),
+  );
+  return { module: coreFromSurface(module), result };
 }
 
 export async function checkSourceSteps(
@@ -97,8 +107,11 @@ export async function analyzeFile(
   options: ModuleGraphOptions = {},
 ): Promise<{ graph: ModuleGraph; results: Map<string, InferResult> }> {
   const graph = await loadModuleGraph(input, options);
+  const ffi = new Map<string, ReturnType<typeof prepareFfiElaboration>>();
   for (const node of graph.nodes.values()) {
-    node.module = prepareFfiElaboration(node.module).module;
+    const prepared = prepareFfiElaboration(node.module);
+    ffi.set(node.path, prepared);
+    node.module = prepared.module;
   }
   const results = new Map<string, InferResult>();
   for (const path of graph.order) {
@@ -108,12 +121,25 @@ export async function analyzeFile(
       imports.set(edge.specifier, results.get(edge.path)!);
     }
     try {
+      const first = inferModule(node.module, imports);
+      const prepared = ffi.get(path)!;
+      const resolved = resolveDelayedFfiElaboration(prepared, first);
+      node.module = resolved.module;
       results.set(path, inferModule(node.module, imports));
     } catch (error) {
       throw new ModuleAnalysisError(path, node.source, error);
     }
   }
   return { graph, results };
+}
+
+function checkPreparedModuleWithoutImports(
+  module: Module,
+): { module: Module; result: InferResult } {
+  const prepared = prepareFfiElaboration(module);
+  const first = checkModuleWithoutImports(prepared.module);
+  const resolved = resolveDelayedFfiElaboration(prepared, first);
+  return { module: resolved.module, result: checkModuleWithoutImports(resolved.module) };
 }
 
 function checkModuleWithoutImports(module: Module): InferResult {

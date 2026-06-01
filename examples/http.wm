@@ -1,24 +1,20 @@
 -- HTTP server helpers for wm-mini
 
-from js.global("Reflect") import {
-  get as jsGet: (t, String) => String,
-  construct: (String, Js.Value)=> t
-};
-from js.global("globalThis") import { globalThis: Js.Value };
+from js.global import unsafe { URL, Response };
+from js.global import type { Request };
 
 export record Route = {
   method: String,
   path: String,
-  handler: (Js.Value) => Js.Value
+  handler: (Request) => Js.Object
 };
 
 export let get = (path, handler) => {
   .{ method = "GET", path, handler }
 };
 
-export let response = (body:String, init) => {
-  let ctor = jsGet(globalThis, "Response");
-  construct(ctor, JSON[body, init])
+export let response = (body, init) => {
+  Response.new(body, init)
 };
 
 let rec findHandler = (routes, method, path) => {
@@ -36,16 +32,24 @@ let rec findHandler = (routes, method, path) => {
 
 export let dispatch = (routes) => {
   (req, info) => {
-    let method = jsGet(req, "method");
-    let urlStr = jsGet(req, "url");
-    let urlObj = construct(jsGet(globalThis, "URL"), JSON[urlStr]);
-    let path = jsGet(urlObj, "pathname");
+    let method = match(req.method) {
+      Ok(value) => { value },
+      Err(_) => { "" },
+    };
+    let urlStr = match(req.url) {
+      Ok(value) => { value },
+      Err(_) => { "/" },
+    };
+    let urlObj = URL.new(urlStr);
+    let path = match(urlObj.pathname) {
+      Ok(value) => { value },
+      Err(_) => { "/" },
+    };
     let handler = findHandler(routes, method, path);
     match(handler) {
       Some(h) => { h(req) },
       None => {
-        let notFound = jsGet(globalThis, "Response");
-        construct(notFound, JSON["Not Found", JSON{status: 404}])
+        Response.new("Not Found", JSON{status: 404})
       }
     }
   }

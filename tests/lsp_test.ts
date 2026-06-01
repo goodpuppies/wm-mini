@@ -509,6 +509,67 @@ Deno.test("lsp server revalidates open files after imported file changes", async
   assertEquals(second.diagnostics, []);
 });
 
+Deno.test("lsp server revalidates unopened dependents after dependency edits", async () => {
+  const dir = await Deno.makeTempDir();
+  const http = `${dir}/http.wm`;
+  const server = `${dir}/server.wm`;
+  await Deno.writeTextFile(http, "export let dispatch = (req, info) => { req + info };");
+  await Deno.writeTextFile(
+    server,
+    'from "./http.wm" import * as Http; let handler = Http.dispatch(1, 2);',
+  );
+  const httpUri = pathToFileUri(http);
+  const serverUri = pathToFileUri(server);
+
+  const messages = await runLsp([
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        rootUri: pathToFileUri(dir),
+        workspaceFolders: [{ uri: pathToFileUri(dir), name: "test" }],
+      },
+    },
+    {
+      jsonrpc: "2.0",
+      method: "textDocument/didOpen",
+      params: {
+        textDocument: {
+          uri: httpUri,
+          languageId: "wm",
+          version: 1,
+          text: await Deno.readTextFile(http),
+        },
+      },
+    },
+    {
+      jsonrpc: "2.0",
+      method: "textDocument/didChange",
+      params: {
+        textDocument: { uri: httpUri, version: 2 },
+        contentChanges: [{ text: "export let dispatch = (req) => { req + 1 };" }],
+      },
+    },
+    async () => {
+      await delay(150);
+    },
+    { jsonrpc: "2.0", id: 2, method: "shutdown", params: null },
+    { jsonrpc: "2.0", method: "exit", params: null },
+  ]);
+
+  const publishes = messages.filter((message) =>
+    message.method === "textDocument/publishDiagnostics"
+  );
+  const serverPublishes = publishes.filter((message) =>
+    (message.params as { uri: string }).uri === serverUri
+  );
+  const last = serverPublishes.at(-1)?.params as
+    | { diagnostics: { code: string }[] }
+    | undefined;
+  assertEquals(last?.diagnostics.map((diagnostic) => diagnostic.code), ["type.mismatch"]);
+});
+
 Deno.test("lsp server skips unchanged diagnostic publishes", async () => {
   const dir = await Deno.makeTempDir();
   const main = `${dir}/main.wm`;

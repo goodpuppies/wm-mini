@@ -43,6 +43,8 @@ export function hasUnguardedRecursiveRef(
       return expr.fields.some((field) => hasUnguardedRecursiveRef(field.value, names, guarded));
     case "JsonArray":
       return expr.items.some((item) => hasUnguardedRecursiveRef(item, names, guarded));
+    case "FfiGet":
+      return hasUnguardedRecursiveRef(expr.receiver, names, guarded);
     case "Lambda":
       return hasUnguardedRecursiveRef(expr.body, names, true);
     case "Call":
@@ -134,5 +136,6 @@ function patternBindingNames(pattern: Pattern): string[] {
 
 function isExpr(value: Expr | Decl): value is Expr {
   return value.kind !== "ImportDecl" && value.kind !== "LetDecl" && value.kind !== "TypeDecl" &&
-    value.kind !== "RecordDecl";
+    value.kind !== "RecordDecl" && value.kind !== "JsImportDecl" &&
+    value.kind !== "ForeignTypeDecl";
 }

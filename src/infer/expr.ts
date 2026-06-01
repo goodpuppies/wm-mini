@@ -11,6 +11,7 @@ import {
   fn,
   fresh,
   instantiate,
+  named,
   NumberTy,
   prune,
   quoteType,
@@ -134,6 +135,11 @@ function inferExprInner(
       }
       t = jsonValueTy(typeEnv);
       break;
+    case "FfiGet": {
+      inferExpr(expr.receiver, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+      t = ffiGetResultTy(typeEnv, fresh());
+      break;
+    }
     case "Lambda": {
       const local = new Map(env);
       const annotationVars: TypeVarScope = new Map();
@@ -235,9 +241,12 @@ function inferCall(
     const argExpr = expr.args.length === 1 ? expr.args[0] : expr;
     const calleeRelated = callCalleeRelated(expr.callee, calleeFn);
     const callDepth = maxCallDepth([...calleeRelated, ...calleeProvenance]) + 1;
+    const isJsImport = expr.callee.kind === "Var" && env.get(expr.callee.name)?.jsImport;
+    const expectedArg = calleeFn.params[0];
+    const actualArg = isJsImport ? jsImportActualArg(calleeFn.params[0], arg, typeEnv) : arg;
     constrainAt(
-      calleeFn.params[0],
-      arg,
+      expectedArg,
+      actualArg,
       argExpr,
       () => `type mismatch expected ${quoteType(calleeFn.params[0])}, got ${quoteType(arg)}`,
       [...calleeRelated, ...calleeProvenance],
@@ -253,12 +262,13 @@ function inferCall(
       },
     );
     if (isPrintCall) assertPrintable(arg);
-    if (expr.callee.kind === "Var" && env.get(expr.callee.name)?.jsImport) {
-      assertJsCompatible(arg);
+    if (isJsImport) {
+      assertJsCompatible(arg, typeEnv);
     }
     constrainAt(result, calleeFn.result, expr);
   } else {
-    const callDepth = maxCallDepth([...callCalleeRelated(expr.callee, callee), ...calleeProvenance]) + 1;
+    const callDepth =
+      maxCallDepth([...callCalleeRelated(expr.callee, callee), ...calleeProvenance]) + 1;
     constrainAt(
       callee,
       fn([arg], result),
@@ -280,29 +290,83 @@ function inferCall(
   return result;
 }
 
+function ffiGetResultTy(typeEnv: TypeEnv, value: Ty): Ty {
+  const result = typeEnv.get("Result");
+  const jsError = typeEnv.get("Js.Error");
+  if (!result || !jsError) throw new Error("unknown FFI result basis type");
+  return named(result, [value, named(jsError)]);
+}
+
+function jsImportActualArg(expected: Ty, actual: Ty, typeEnv: TypeEnv): Ty {
+  const expectedType = prune(expected);
+  const actualType = prune(actual);
+  if (isJsObjectType(expectedType, typeEnv) && isForeignObjectType(actualType, typeEnv)) {
+    const jsObject = typeEnv.get("Js.Object");
+    if (!jsObject) throw new Error("unknown type Js.Object");
+    return named(jsObject);
+  }
+  if (expectedType.tag === "fn" && actualType.tag === "fn") {
+    return fn(
+      actualType.params.map((param, i) =>
+        jsImportActualArg(expectedType.params[i] ?? param, param, typeEnv)
+      ),
+      jsImportActualArg(expectedType.result, actualType.result, typeEnv),
+    );
+  }
+  if (expectedType.tag === "tuple" && actualType.tag === "tuple") {
+    return tuple(
+      actualType.items.map((item, i) =>
+        jsImportActualArg(expectedType.items[i] ?? item, item, typeEnv)
+      ),
+    );
+  }
+  if (
+    expectedType.tag === "named" && actualType.tag === "named" && expectedType.id === actualType.id
+  ) {
+    return {
+      ...actualType,
+      args: actualType.args.map((item, i) =>
+        jsImportActualArg(expectedType.args[i] ?? item, item, typeEnv)
+      ),
+    };
+  }
+  return actualType;
+}
+
+function isForeignObjectType(type: Ty, typeEnv: TypeEnv): boolean {
+  const t = prune(type);
+  return t.tag === "named" && Boolean(t.foreign || typeEnv.get(t.name)?.foreign);
+}
+
+function isJsObjectType(type: Ty, typeEnv: TypeEnv): boolean {
+  const t = prune(type);
+  return t.tag === "named" && t.id === typeEnv.get("Js.Object")?.id;
+}
+
 function assertPrintable(type: Ty) {
   if (containsNamedType(type, "Js.Error")) {
     throw new Error(`print requires an already-handled value, got ${quoteType(type)}`);
   }
 }
 
-function assertJsCompatible(type: Ty) {
+function assertJsCompatible(type: Ty, typeEnv: TypeEnv) {
   const t = prune(type);
   switch (t.tag) {
     case "prim":
     case "var":
       return;
     case "fn":
-      t.params.forEach(assertJsCompatible);
-      assertJsCompatible(t.result);
+      t.params.forEach((param) => assertJsCompatible(param, typeEnv));
+      assertJsCompatible(t.result, typeEnv);
       return;
     case "tuple":
-      t.items.forEach(assertJsCompatible);
+      t.items.forEach((item) => assertJsCompatible(item, typeEnv));
       return;
     case "named":
       if (t.name === "Js.Value" || t.name === "Js.Object" || t.name === "Js.Error") return;
+      if (t.foreign || typeEnv.get(t.name)?.foreign) return;
       if (t.name === "Option" && t.args.length === 1) {
-        assertJsCompatible(t.args[0]);
+        assertJsCompatible(t.args[0], typeEnv);
         return;
       }
       throw new Error(`cannot pass ${quoteType(t)} to JS FFI call`);
@@ -491,13 +555,33 @@ function inferPipe(
   diagnostics: FrontendDiagnostic[],
   provenance: TypeProvenance,
 ): Ty {
-  const leftType = inferExpr(expr.left, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+  const leftType = inferExpr(
+    expr.left,
+    env,
+    typeEnv,
+    adts,
+    types,
+    warnings,
+    diagnostics,
+    provenance,
+  );
   const right = expr.right;
-  
+
   if (right.kind === "Call") {
     // e.g., 10 :> add(5) -> add(10, 5)
-    const calleeType = inferExpr(right.callee, env, typeEnv, adts, types, warnings, diagnostics, provenance);
-    const argTypes = right.args.map((a) => inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics, provenance));
+    const calleeType = inferExpr(
+      right.callee,
+      env,
+      typeEnv,
+      adts,
+      types,
+      warnings,
+      diagnostics,
+      provenance,
+    );
+    const argTypes = right.args.map((a) =>
+      inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics, provenance)
+    );
     const allArgs = [leftType, ...argTypes];
     const argType = callArg(allArgs);
     const result = fresh();
@@ -505,7 +589,8 @@ function inferPipe(
       calleeType,
       fn([argType], result),
       expr,
-      () => `type mismatch expected ${quoteType(fn([argType], result))}, got ${quoteType(calleeType)}`,
+      () =>
+        `type mismatch expected ${quoteType(fn([argType], result))}, got ${quoteType(calleeType)}`,
       [],
       provenance,
       {
@@ -521,13 +606,23 @@ function inferPipe(
     return result;
   } else if (right.kind === "Var") {
     // e.g., 42 :> double -> double(42)
-    const calleeType = inferExpr(right, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+    const calleeType = inferExpr(
+      right,
+      env,
+      typeEnv,
+      adts,
+      types,
+      warnings,
+      diagnostics,
+      provenance,
+    );
     const result = fresh();
     constrainAt(
       calleeType,
       fn([leftType], result),
       expr,
-      () => `type mismatch expected ${quoteType(fn([leftType], result))}, got ${quoteType(calleeType)}`,
+      () =>
+        `type mismatch expected ${quoteType(fn([leftType], result))}, got ${quoteType(calleeType)}`,
       [],
       provenance,
       {
@@ -543,13 +638,23 @@ function inferPipe(
     return result;
   } else {
     // For other cases, treat right as a function and call it with left
-    const calleeType = inferExpr(right, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+    const calleeType = inferExpr(
+      right,
+      env,
+      typeEnv,
+      adts,
+      types,
+      warnings,
+      diagnostics,
+      provenance,
+    );
     const result = fresh();
     constrainAt(
       calleeType,
       fn([leftType], result),
       expr,
-      () => `type mismatch expected ${quoteType(fn([leftType], result))}, got ${quoteType(calleeType)}`,
+      () =>
+        `type mismatch expected ${quoteType(fn([leftType], result))}, got ${quoteType(calleeType)}`,
       [],
       provenance,
       {

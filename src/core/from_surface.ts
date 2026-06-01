@@ -39,6 +39,15 @@ function coreDeclFromSurface(decl: Decl): CoreDecl {
   switch (decl.kind) {
     case "ImportDecl":
       return { kind: "CoreImport", path: decl.path, node: decl.node };
+    case "ForeignTypeDecl":
+      return {
+        kind: "CoreType",
+        exported: false,
+        name: decl.name,
+        params: [],
+        ctors: [],
+        node: decl.node,
+      };
     case "JsImportDecl":
       return {
         kind: "CoreJsImport",
@@ -127,6 +136,8 @@ function coreExprFromSurface(expr: Expr): CoreExpr {
         items: expr.items.map(coreExprFromSurface),
         node: expr.node,
       };
+    case "FfiGet":
+      throw new Error("unresolved FFI projection reached Core elaboration");
     case "Lambda":
       return {
         kind: "CoreFn",
@@ -273,7 +284,8 @@ function coreRecordPatternFieldFromSurface(field: RecordPatternField): CoreRecor
 
 function isDecl(value: Decl | Expr): value is Decl {
   return value.kind === "ImportDecl" || value.kind === "LetDecl" ||
-    value.kind === "JsImportDecl" || value.kind === "TypeDecl" || value.kind === "RecordDecl";
+    value.kind === "JsImportDecl" || value.kind === "TypeDecl" || value.kind === "RecordDecl" ||
+    value.kind === "ForeignTypeDecl";
 }
 
 function coreCtorPayload(args: CtorDecl["args"], node: CtorDecl["node"]) {
@@ -291,7 +303,7 @@ function coreCtorPatternPayload(args: Pattern[], node: Pattern["node"]): CorePat
 function desugarPipe(pipe: Located<{ kind: "Pipe"; left: Expr; right: Expr }>): CoreExpr {
   const left = coreExprFromSurface(pipe.left);
   const right = pipe.right;
-  
+
   if (right.kind === "Call") {
     // e.g., 10 :> add(5) -> add(10, 5)
     const callee = coreExprFromSurface(right.callee);

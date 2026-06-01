@@ -6,7 +6,8 @@ export type Module = Located<{ kind: "Module"; decls: Decl[] }>;
 
 export type Decl =
   | Located<{ kind: "ImportDecl"; path: string; pathNode?: AstNode; clause: ImportClause }>
-  | Located<{ kind: "JsImportDecl"; target: JsTarget; clause: JsImportClause }>
+  | Located<{ kind: "JsImportDecl"; target: JsTarget; clause: JsImportClause; typeOnly?: boolean }>
+  | Located<{ kind: "ForeignTypeDecl"; name: string }>
   | Located<{ kind: "LetDecl"; exported: boolean; recursive: boolean; bindings: Binding[] }>
   | Located<{
     kind: "RecordDecl";
@@ -31,9 +32,11 @@ export type ImportClause =
   | Located<{ kind: "Named"; specs: ImportSpec[] }>;
 export type ImportSpec = Located<{ name: string; alias?: string }>;
 export type JsTarget =
+  | Located<{ kind: "JsGlobalRoot" }>
   | Located<{ kind: "JsGlobal"; path: string }>
   | Located<{ kind: "JsModule"; specifier: string }>
-  | Located<{ kind: "JsReceiver"; path: string[] }>;
+  | Located<{ kind: "JsReceiver"; path: string[] }>
+  | Located<{ kind: "JsConstructor"; path: string }>;
 export type JsImportClause =
   | Located<{ kind: "Namespace"; alias: string; unsafe?: boolean }>
   | Located<{ kind: "Named"; specs: JsImportSpec[]; alias?: string; unsafe?: boolean }>;
@@ -59,6 +62,7 @@ export type Expr =
   | Located<{ kind: "Record"; fields: RecordExprField[] }>
   | Located<{ kind: "JsonObject"; fields: JsonObjectField[] }>
   | Located<{ kind: "JsonArray"; items: Expr[] }>
+  | Located<{ kind: "FfiGet"; receiver: Expr; path: string[] }>
   | Located<{ kind: "Lambda"; params: Param[]; body: Expr }>
   | Located<{ kind: "Call"; callee: Expr; args: Expr[] }>
   | Located<{ kind: "If"; cond: Expr; thenExpr: Expr; elseExpr: Expr }>

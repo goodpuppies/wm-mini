@@ -133,3 +133,96 @@ Deno.test("FFI elaboration skips Result wrapping for unsafe imports", async () =
   assertEquals(ffi.bindings.get("construct")?.variants[0].fallible, false);
   assertEquals(ffi.bindings.get("R.sqrt")?.variants[0].fallible, false);
 });
+
+Deno.test("FFI elaboration reflects global value constructors and properties", async () => {
+  const module = await parse(`
+    from js.global import { URL };
+    let path = match(URL.new("https://example.com/a")) {
+      Ok(url) => { url.pathname },
+      Err(_) => { Panic("url failed") },
+    };
+  `);
+
+  const ffi = prepareFfiElaboration(module);
+  const imports = ffi.module.decls.filter((decl) => decl.kind === "JsImportDecl");
+
+  assertEquals(ffi.bindings.get("URL.new")?.variants[0].target.kind, "JsConstructor");
+  assertEquals(
+    imports.some((decl) => decl.kind === "JsImportDecl" && decl.target.kind === "JsReceiver"),
+    true,
+  );
+});
+
+Deno.test("FFI elaboration reflects callback parameter refs", async () => {
+  const module = await parse(`
+    from js.global("Deno") import { serve };
+    from js.global import { Response };
+    let server = serve((req, info) => {
+      let path = match(req.url) {
+        Ok(value) => { value },
+        Err(_) => { "/" },
+      };
+      match(Response.new(path, JSON{status: 200})) {
+        Ok(response) => { response },
+        Err(_) => { Panic("response failed") },
+      }
+    });
+  `);
+
+  const ffi = prepareFfiElaboration(module);
+  const receiverImport = ffi.module.decls.find((decl) =>
+    decl.kind === "JsImportDecl" && decl.target.kind === "JsReceiver"
+  );
+
+  assertEquals(
+    receiverImport?.kind === "JsImportDecl" && receiverImport.target.kind === "JsReceiver"
+      ? receiverImport.target.path
+      : undefined,
+    ["url"],
+  );
+});
+
+Deno.test("FFI elaboration rewrites annotated Js.Object property reads", async () => {
+  const module = await parse(`
+    let read = (req: Js.Object) => {
+      req.method
+    };
+  `);
+
+  const ffi = prepareFfiElaboration(module);
+  const receiverImport = ffi.module.decls.find((decl) =>
+    decl.kind === "JsImportDecl" && decl.target.kind === "JsReceiver"
+  );
+
+  assertEquals(
+    receiverImport?.kind === "JsImportDecl" && receiverImport.target.kind === "JsReceiver"
+      ? receiverImport.target.path
+      : undefined,
+    ["method"],
+  );
+});
+
+Deno.test("FFI elaboration preserves type-only JS refs for property reads", async () => {
+  const module = await parse(`
+    from js.global import type { Request };
+    let read = (req: Request) => {
+      req.method
+    };
+  `);
+
+  const ffi = prepareFfiElaboration(module);
+  const foreignType = ffi.module.decls.find((decl) =>
+    decl.kind === "ForeignTypeDecl" && decl.name === "Request"
+  );
+  const receiverImport = ffi.module.decls.find((decl) =>
+    decl.kind === "JsImportDecl" && decl.target.kind === "JsReceiver"
+  );
+
+  assertEquals(foreignType?.kind, "ForeignTypeDecl");
+  assertEquals(
+    receiverImport?.kind === "JsImportDecl" && receiverImport.target.kind === "JsReceiver"
+      ? receiverImport.target.path
+      : undefined,
+    ["method"],
+  );
+});

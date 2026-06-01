@@ -1,8 +1,8 @@
 -- HTTP server using the wm-mini router library
 
-from js.global("Deno") import { serve };
-from js.global("console") import { log };
-from js.global("Date") import { Date as dateString: () => String };
+from js.global import unsafe { Date };
+from js.global("Deno") import unsafe { serve };
+from js.global("console") import unsafe { log };
 from "./http.wm" import { get, response, dispatch };
 
 let routes = [
@@ -13,7 +13,11 @@ let routes = [
     response("{\"status\":\"ok\"}", JSON{status: 200})
   }),
   get("/time", (req) => {
-    let now = dateString();
+    let date = Date.new();
+    let now = match(date.toISOString()) {
+      Ok(value) => { value },
+      Err(_) => { "unknown" },
+    };
     response("{\"time\":\"" ++ now ++ "\"}", JSON{status: 200})
   })
 ];

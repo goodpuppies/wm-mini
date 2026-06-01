@@ -1,9 +1,11 @@
 import { DocumentStore } from "./documents.ts";
 import { hoverAt } from "./hover.ts";
+import { type InitializeParams, ProjectIndex } from "./project_index.ts";
 import { decodeMessages, encodeMessage, type RpcMessage } from "./rpc.ts";
 import { validateUri } from "./validation.ts";
 
 const documents = new DocumentStore();
+const projectIndex = new ProjectIndex();
 const publishedDiagnostics = new Map<string, string>();
 let editValidationTimer: ReturnType<typeof setTimeout> | undefined;
 let isShutdown = false;
@@ -35,6 +37,8 @@ export async function runServer() {
 
 async function handleMessage(message: RpcMessage) {
   if (message.method === "initialize") {
+    projectIndex.rememberWorkspaceRoots(message.params as InitializeParams | undefined);
+    await projectIndex.initialize(documents.sourceOverrides());
     await respond(message.id, {
       capabilities: {
         textDocumentSync: {
@@ -57,7 +61,7 @@ async function handleMessage(message: RpcMessage) {
   if (message.method === "textDocument/didOpen") {
     const params = message.params as DidOpenParams;
     documents.open(params.textDocument.uri, params.textDocument.text, params.textDocument.version);
-    await publishValidation(params.textDocument.uri);
+    await publishAffectedValidation(params.textDocument.uri);
     return;
   }
   if (message.method === "textDocument/didChange") {
@@ -65,17 +69,21 @@ async function handleMessage(message: RpcMessage) {
     const text = params.contentChanges.at(-1)?.text;
     if (text === undefined) return;
     documents.change(params.textDocument.uri, text, params.textDocument.version);
-    await debounceValidation(params.textDocument.uri);
+    await debounceAffectedValidation(params.textDocument.uri);
     return;
   }
   if (message.method === "textDocument/didSave") {
     const params = message.params as DidSaveParams;
-    await publishValidation(params.textDocument.uri);
+    await publishAffectedValidation(params.textDocument.uri);
     return;
   }
   if (message.method === "textDocument/hover") {
     const params = message.params as HoverParams;
-    const hover = await hoverAt(params.textDocument.uri, params.position, documents.sourceOverrides());
+    const hover = await hoverAt(
+      params.textDocument.uri,
+      params.position,
+      documents.sourceOverrides(),
+    );
     log(
       "hover result",
       `id=${String(message.id ?? "-")}`,
@@ -98,7 +106,8 @@ async function handleMessage(message: RpcMessage) {
     return;
   }
   if (message.method === "workspace/didChangeWatchedFiles") {
-    await Promise.all(documents.uris().map((uri) => publishValidation(uri)));
+    const params = message.params as DidChangeWatchedFilesParams;
+    await publishWatchedFileValidation(params.changes.map((change) => change.uri));
   }
 }
 
@@ -112,13 +121,33 @@ async function publishValidation(uri: string) {
   log("validate done", uri, `${Date.now() - started}ms`, `results=${results.length}`);
 }
 
-async function debounceValidation(uri: string): Promise<void> {
+async function debounceAffectedValidation(uri: string): Promise<void> {
   if (editValidationTimer !== undefined) clearTimeout(editValidationTimer);
   await new Promise<void>((resolve) => {
     editValidationTimer = setTimeout(() => resolve(), 75);
   });
   editValidationTimer = undefined;
-  await publishValidation(uri);
+  await publishAffectedValidation(uri);
+}
+
+async function publishAffectedValidation(uri: string) {
+  const started = Date.now();
+  const uris = await projectIndex.affectedUrisForChange(uri, documents.sourceOverrides());
+  if (uris.length === 0) uris.push(projectIndex.fallbackUri(uri));
+  log("affected validate start", uri, `files=${uris.length}`);
+  for (const affectedUri of uris) await publishValidation(affectedUri);
+  log("affected validate done", uri, `${Date.now() - started}ms`, `files=${uris.length}`);
+}
+
+async function publishWatchedFileValidation(uris: string[]) {
+  const started = Date.now();
+  const affectedUris = await projectIndex.affectedUrisForWatchedFiles(
+    uris,
+    documents.sourceOverrides(),
+  );
+  log("watched validate start", `changed=${uris.length}`, `files=${affectedUris.length}`);
+  for (const uri of affectedUris) await publishValidation(uri);
+  log("watched validate done", `${Date.now() - started}ms`, `files=${affectedUris.length}`);
 }
 
 async function publishDiagnostics(uri: string, diagnostics: unknown[]) {
@@ -214,4 +243,8 @@ type DidSaveParams = {
 type HoverParams = {
   textDocument: { uri: string };
   position: { line: number; character: number };
+};
+
+type DidChangeWatchedFilesParams = {
+  changes: { uri: string; type?: number }[];
 };

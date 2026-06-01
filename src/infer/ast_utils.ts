@@ -2,7 +2,8 @@ import type { Decl, Expr } from "../ast.ts";
 
 export function isDecl(value: Decl | Expr): value is Decl {
   return value.kind === "ImportDecl" || value.kind === "LetDecl" ||
-    value.kind === "JsImportDecl" || value.kind === "TypeDecl" || value.kind === "RecordDecl";
+    value.kind === "JsImportDecl" || value.kind === "TypeDecl" || value.kind === "RecordDecl" ||
+    value.kind === "ForeignTypeDecl";
 }
 
 export function resultExpr(expr: Expr): Expr {

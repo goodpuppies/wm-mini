@@ -485,6 +485,34 @@ Deno.test("cli run maps reflected JS throws to Result Err", async () => {
   assertEquals(result.stderr, "");
 });
 
+Deno.test("cli run constructs reflected JS globals and reads properties", async () => {
+  const dir = await Deno.makeTempDir();
+  const input = `${dir}/main.wm`;
+  await Deno.writeTextFile(
+    input,
+    `
+      from js.global import { URL };
+      let main = () => {
+        print(match(URL.new("https://example.com/a")) {
+          Ok(url) => {
+            match(url.pathname) {
+              Ok(path) => { path },
+              Err(_) => { "property failed" },
+            }
+          },
+          Err(_) => { "constructor failed" },
+        })
+      };
+    `,
+  );
+
+  const result = await runCli(["run", input]);
+
+  assertEquals(result.code, 0);
+  assertEquals(result.stdout, "/a\n");
+  assertEquals(result.stderr, "");
+});
+
 async function runCli(args: string[]) {
   const result = await new Deno.Command(Deno.execPath(), {
     args: ["run", "--allow-read", "--allow-write", "--allow-run", "--allow-env", cli, ...args],

@@ -63,12 +63,14 @@ ImportSpecList = first:ImportSpec rest:(_ "," _ s:ImportSpec { return s; })* _ "
 ImportSpec = name:Name alias:(_ "as" _ a:Identifier { return a; })? { return at({ name, alias }, location()); }
 
 JsImportDecl
-  = "from" __ target:JsTarget __ "import" __ clause:JsImportClause _ ";"
-    { return at({ kind: "JsImportDecl", target, clause }, location()); }
+  = "from" __ target:JsTarget __ "import" __ typeOnly:("type" __)? clause:JsImportClause _ ";"
+    { return at({ kind: "JsImportDecl", target, clause, typeOnly: !!typeOnly }, location()); }
 
 JsTarget
   = "js.global" _ "(" _ path:String _ ")"
     { return at({ kind: "JsGlobal", path: path.value }, location()); }
+  / "js.global" !IdentPart
+    { return at({ kind: "JsGlobalRoot" }, location()); }
   / "js.module" _ "(" _ specifier:String _ ")"
     { return at({ kind: "JsModule", specifier: specifier.value }, location()); }
 

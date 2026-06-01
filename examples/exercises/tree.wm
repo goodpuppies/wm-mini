@@ -3,28 +3,24 @@ from "./math.wm" import *;
 export type Tree = EmptyT | Node<Number, Tree, Tree>;
 export type NumOption = NNone | NSome<Number>;
 
-export let rec findTree = (num, tree:Tree) => {
-  match(tree) {
-    EmptyT => {NNone},
-    Node(val,t1,t2) => {
-      match(compareN(num,val)) {
-        Equal => {NSome(num)},
-        Less => {findTree(num,t1)},
-        Greater => {findTree(num,t2)}
-      }
+export let rec findTree = (num, tree) => {
+  (_, EmptyT) => {NNone},
+  (_, Node(val,t1,t2)) => {
+    match(compareN(num,val)) {
+      Equal => { NSome(val) },
+      Less => { findTree(num,t1) },
+      Greater => { findTree(num,t2) }
     }
   }
 };
 
-export let rec insert = (int, tree) => {
-  match(tree){
-    EmptyT => {Node(int, EmptyT, EmptyT)},
-    Node(val, t1,t2) => {
-      if (int < val) {
-        Node(val,insert(int, t1),t2)
-      } else {
-        Node(val,t1,insert(int, t2))
-      }
+export let rec insert = match(int, tree) => {
+  (_, EmptyT) => {Node(int, EmptyT, EmptyT)},
+  (_, Node(val, t1,t2)) => {
+    if (int < val) {
+      Node(val,insert(int, t1),t2)
+    } else {
+      Node(val,t1,insert(int, t2))
     }
   }
 };

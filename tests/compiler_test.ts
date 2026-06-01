@@ -1,6 +1,13 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { pathToFileURL } from "node:url";
-import { checkFile, checkSource, checkVirtual, compile, compileFile, compileVirtual } from "../src/compiler.ts";
+import {
+  checkFile,
+  checkSource,
+  checkVirtual,
+  compile,
+  compileFile,
+  compileVirtual,
+} from "../src/compiler.ts";
 import { parse } from "../src/parser.ts";
 import { expectBinding } from "./type_helpers.ts";
 
@@ -97,11 +104,14 @@ Deno.test("source-only frontend rejects imports with clear API boundary", async 
 Deno.test("imports are declaration-ordered and not hoisted", async () => {
   const virtualFs = new Map<string, string>([
     ["/test/lib.wm", "export let value = 1;"],
-    ["/test/main.wm", "let x = Lib.value; from \"./lib.wm\" import * as Lib;"],
+    ["/test/main.wm", 'let x = Lib.value; from "./lib.wm" import * as Lib;'],
   ]);
-  await assertRejects(() => checkVirtual("/test/main.wm", virtualFs), Error, "unknown name Lib.value");
+  await assertRejects(
+    () => checkVirtual("/test/main.wm", virtualFs),
+    Error,
+    "unknown name Lib.value",
+  );
 });
-
 
 Deno.test("checkFile accepts URL pathname entry paths", async () => {
   const virtualFs = new Map<string, string>([
@@ -115,23 +125,38 @@ Deno.test("checkFile accepts URL pathname entry paths", async () => {
 Deno.test("supports long type constructors from imported files", async () => {
   const virtualFs = new Map<string, string>([
     ["/test/box.wm", "export type Box<T> = | Box<T>; export let make = (x) => { Box(x) };"],
-    ["/test/main.wm", 'from "./box.wm" import * as Boxed; let x: Boxed.Box<Number> = Boxed.make(1);'],
+    [
+      "/test/main.wm",
+      'from "./box.wm" import * as Boxed; let x: Boxed.Box<Number> = Boxed.make(1);',
+    ],
   ]);
   await checkVirtual("/test/main.wm", virtualFs);
 });
 
 Deno.test("supports long constructor identifiers in match patterns", async () => {
   const virtualFs = new Map<string, string>([
-    ["/test/option.wm", "export type Option<T> = None | Some<T>; export let wrap = (x) => { Some(x) };"],
-    ["/test/main.wm", "from \"./option.wm\" import * as Opt; let value = Opt.wrap(1); let get = match(value) => { Opt.Some(x) => { x }, Opt.None => { 0 } };"],
+    [
+      "/test/option.wm",
+      "export type Option<T> = None | Some<T>; export let wrap = (x) => { Some(x) };",
+    ],
+    [
+      "/test/main.wm",
+      'from "./option.wm" import * as Opt; let value = Opt.wrap(1); let get = match(value) => { Opt.Some(x) => { x }, Opt.None => { 0 } };',
+    ],
   ]);
   await checkVirtual("/test/main.wm", virtualFs);
 });
 
 Deno.test("supports named imports for values constructors and types", async () => {
   const virtualFs = new Map<string, string>([
-    ["/test/option.wm", "export type Option<T> = None | Some<T>; export let make = (x) => { Some(x) };"],
-    ["/test/main.wm", "from \"./option.wm\" import { Option, Some, None, make as wrap }; let value: Option<Number> = wrap(1); let get = match(value) => { Some(x) => { x }, None => { 0 } };"],
+    [
+      "/test/option.wm",
+      "export type Option<T> = None | Some<T>; export let make = (x) => { Some(x) };",
+    ],
+    [
+      "/test/main.wm",
+      'from "./option.wm" import { Option, Some, None, make as wrap }; let value: Option<Number> = wrap(1); let get = match(value) => { Some(x) => { x }, None => { 0 } };',
+    ],
   ]);
   await checkVirtual("/test/main.wm", virtualFs);
 });
@@ -256,6 +281,93 @@ Deno.test("reflects literal JS event callback parameter types", async () => {
   expectBinding(result.env, "closed", { type: "Result<Js.Object, Js.Error>", vars: 0 });
 });
 
+Deno.test("reflects global value constructors through new member", async () => {
+  const result = await checkSource(`
+    from js.global import { URL, Response };
+    let url = URL.new("https://example.com/a");
+    let response = Response.new("ok", JSON{status: 200});
+  `);
+
+  expectBinding(result.env, "url", { type: "Result<Js.Object, Js.Error>", vars: 0 });
+  expectBinding(result.env, "response", { type: "Result<Js.Object, Js.Error>", vars: 0 });
+});
+
+Deno.test("reflects JS object property reads from known refs", async () => {
+  const result = await checkSource(`
+    from js.global import { URL };
+    let path = match(URL.new("https://example.com/a")) {
+      Ok(url) => { url.pathname },
+      Err(_) => { Panic("url failed") },
+    };
+  `);
+
+  expectBinding(result.env, "path", { type: "Result<String, Js.Error>", vars: 0 });
+});
+
+Deno.test("reflects callback parameter object refs before HM", async () => {
+  const result = await checkSource(`
+    from js.global("Deno") import { serve };
+    from js.global import { Response };
+    let server = serve((req, info) => {
+      let url = match(req.url) {
+        Ok(value) => { value },
+        Err(_) => { "/" },
+      };
+      match(Response.new(url, JSON{status: 200})) {
+        Ok(response) => { response },
+        Err(_) => { Panic("response failed") },
+      }
+    });
+  `);
+
+  expectBinding(result.env, "server", { type: "Result<Js.Object, Js.Error>", vars: 0 });
+});
+
+Deno.test("reflects dynamic properties from annotated Js.Object values", async () => {
+  const result = await checkSource(`
+    let methodOf = (req: Js.Object) => {
+      match(req.method) {
+        Ok(value) => { value == "GET" },
+        Err(_) => { false },
+      }
+    };
+  `);
+
+  expectBinding(result.env, "methodOf", { type: "(Js.Object) => Bool", vars: 0 });
+});
+
+Deno.test("reflects properties from type-only JS imports before HM", async () => {
+  const result = await checkSource(`
+    from js.global import type { Request };
+    let methodOf = (req: Request) => {
+      match(req.method) {
+        Ok(value) => { value == "GET" },
+        Err(_) => { false },
+      }
+    };
+  `);
+
+  expectBinding(result.env, "methodOf", { type: "(Request) => Bool", vars: 0 });
+});
+
+Deno.test("delays foreign property reflection until HM constrains the receiver", async () => {
+  const result = await checkSource(`
+    from js.global import type { Request };
+    let useRequest = (h: (Request) => Js.Object, req) => {
+      let method = match(req.method) {
+        Ok(value) => { value },
+        Err(_) => { "" },
+      };
+      h(req)
+    };
+  `);
+
+  expectBinding(result.env, "useRequest", {
+    type: "(((Request) => Js.Object, Request)) => Js.Object",
+    vars: 0,
+  });
+});
+
 Deno.test("reflected JS overload sets are not bare HM values", async () => {
   await assertRejects(
     () =>
@@ -338,7 +450,11 @@ Deno.test("named imports reject missing members", async () => {
     ["/test/lib.wm", "export let present = 1;"],
     ["/test/main.wm", 'from "./lib.wm" import { missing }; let x = 1;'],
   ]);
-  await assertRejects(() => checkVirtual("/test/main.wm", virtualFs), Error, "unknown import missing");
+  await assertRejects(
+    () => checkVirtual("/test/main.wm", virtualFs),
+    Error,
+    "unknown import missing",
+  );
 });
 
 Deno.test("rejects duplicate imported bindings in the same namespace", async () => {
@@ -346,31 +462,52 @@ Deno.test("rejects duplicate imported bindings in the same namespace", async () 
     ["/test/lib.wm", "export let present = 1;"],
     ["/test/main.wm", 'from "./lib.wm" import { present, present as present }; let x = present;'],
   ]);
-  await assertRejects(() => checkVirtual("/test/main.wm", virtualFs), Error, "duplicate value import present");
+  await assertRejects(
+    () => checkVirtual("/test/main.wm", virtualFs),
+    Error,
+    "duplicate value import present",
+  );
 });
 
 Deno.test("rejects duplicate qualified imports from repeated namespace aliases", async () => {
   const virtualFs = new Map<string, string>([
     ["/test/a.wm", "export let value = 1;"],
     ["/test/b.wm", "export let value = 2;"],
-    ["/test/main.wm", "from \"./a.wm\" import * as Lib; from \"./b.wm\" import * as Lib; let x = Lib.value;"],
+    [
+      "/test/main.wm",
+      'from "./a.wm" import * as Lib; from "./b.wm" import * as Lib; let x = Lib.value;',
+    ],
   ]);
-  await assertRejects(() => checkVirtual("/test/main.wm", virtualFs), Error, "duplicate value import Lib.value");
+  await assertRejects(
+    () => checkVirtual("/test/main.wm", virtualFs),
+    Error,
+    "duplicate value import Lib.value",
+  );
 });
 
 Deno.test("rejects duplicate named imports across import declarations", async () => {
   const virtualFs = new Map<string, string>([
     ["/test/a.wm", "export let value = 1;"],
     ["/test/b.wm", "export let value = 2;"],
-    ["/test/main.wm", "from \"./a.wm\" import { value }; from \"./b.wm\" import { value }; let x = value;"],
+    [
+      "/test/main.wm",
+      'from "./a.wm" import { value }; from "./b.wm" import { value }; let x = value;',
+    ],
   ]);
-  await assertRejects(() => checkVirtual("/test/main.wm", virtualFs), Error, "duplicate value import value");
+  await assertRejects(
+    () => checkVirtual("/test/main.wm", virtualFs),
+    Error,
+    "duplicate value import value",
+  );
 });
 
 Deno.test("local declarations shadow imported bindings", async () => {
   const virtualFs = new Map<string, string>([
     ["/test/lib.wm", "export let value = 1;"],
-    ["/test/main.wm", "from \"./lib.wm\" import { value }; let value = \"local\"; let ok = value == \"local\";"],
+    [
+      "/test/main.wm",
+      'from "./lib.wm" import { value }; let value = "local"; let ok = value == "local";',
+    ],
   ]);
   await checkVirtual("/test/main.wm", virtualFs);
 });
@@ -380,7 +517,11 @@ Deno.test("imports only see explicit exports", async () => {
     ["/test/lib.wm", "let hidden = 1; export let visible = hidden + 1;"],
     ["/test/main.wm", 'from "./lib.wm" import { hidden }; let x = 1;'],
   ]);
-  await assertRejects(() => checkVirtual("/test/main.wm", virtualFs), Error, "unknown import hidden");
+  await assertRejects(
+    () => checkVirtual("/test/main.wm", virtualFs),
+    Error,
+    "unknown import hidden",
+  );
 });
 
 Deno.test("namespace imports only expose explicit exports", async () => {
@@ -388,22 +529,31 @@ Deno.test("namespace imports only expose explicit exports", async () => {
     ["/test/lib.wm", "let hidden = 1; export let visible = hidden + 1;"],
     ["/test/main.wm", 'from "./lib.wm" import * as Lib; let x = Lib.hidden;'],
   ]);
-  await assertRejects(() => checkVirtual("/test/main.wm", virtualFs), Error, "unknown name Lib.hidden");
+  await assertRejects(
+    () => checkVirtual("/test/main.wm", virtualFs),
+    Error,
+    "unknown name Lib.hidden",
+  );
 });
 
 Deno.test("supports transitive file imports", async () => {
   const virtualFs = new Map<string, string>([
     ["/test/base.wm", "export let id = (x) => { x };"],
     ["/test/mid.wm", 'from "./base.wm" import * as Base; export let keep = (x) => { Base.id(x) };'],
-    ["/test/main.wm", 'from "./mid.wm" import * as Mid; let a = Mid.keep(1); let b = Mid.keep("s");'],
+    [
+      "/test/main.wm",
+      'from "./mid.wm" import * as Mid; let a = Mid.keep(1); let b = Mid.keep("s");',
+    ],
   ]);
   await checkVirtual("/test/main.wm", virtualFs);
 });
 
-
 Deno.test("compiles virtual file system to JS", async () => {
   const virtualFs = new Map<string, string>([
-    ["/test/lib.wm", "export type Option<T> = None | Some<T>; export let wrap = (x) => { Some(x) };"],
+    [
+      "/test/lib.wm",
+      "export type Option<T> = None | Some<T>; export let wrap = (x) => { Some(x) };",
+    ],
     ["/test/main.wm", 'from "./lib.wm" import * as Lib; let value = Lib.wrap(1);'],
   ]);
   const js = await compileVirtual("/test/main.wm", virtualFs);
@@ -424,7 +574,10 @@ Deno.test("same-spelled datatypes from different files are nominally distinct", 
   const virtualFs = new Map<string, string>([
     ["/test/a.wm", "export type Box = | Box; export let make = () => { Box };"],
     ["/test/b.wm", "export type Box = | Box; export let make = () => { Box };"],
-    ["/test/main.wm", "from \"./a.wm\" import * as A; from \"./b.wm\" import * as B; let bad: A.Box = B.make();"],
+    [
+      "/test/main.wm",
+      'from "./a.wm" import * as A; from "./b.wm" import * as B; let bad: A.Box = B.make();',
+    ],
   ]);
   await assertRejects(() => checkVirtual("/test/main.wm", virtualFs), Error, "type mismatch");
 });
