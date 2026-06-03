@@ -368,6 +368,149 @@ Deno.test("delays foreign property reflection until HM constrains the receiver",
   });
 });
 
+Deno.test("delays foreign property reflection until downstream HM constrains the receiver", async () => {
+  const virtualFs = new Map<string, string>([
+    [
+      "/test/http.wm",
+      `
+        from js.global import type { Request };
+        export let dispatch = () => {
+          (req, info) => {
+            let method = match(req.method) {
+              Ok(value) => { value },
+              Err(_) => { "" },
+            };
+            method == "GET"
+          }
+        };
+      `,
+    ],
+    [
+      "/test/server.wm",
+      `
+        from js.global import type { Request };
+        from js.global("Deno") import unsafe {
+          serve: ((Request, Js.Object) => Bool) => Js.Object
+        };
+        from "./http.wm" import { dispatch };
+        let server = serve(dispatch());
+      `,
+    ],
+  ]);
+
+  const results = await checkVirtual("/test/server.wm", virtualFs);
+  const http = results.get("/test/http.wm");
+  if (!http) throw new Error("missing http result");
+  expectBinding(http.env, "dispatch", {
+    type: "(Void) => ((Request, 'a)) => Bool",
+    vars: 1,
+  });
+});
+
+Deno.test("foreign JS type identity is keyed by reflected source, not local name", async () => {
+  const shared = new Map<string, string>([
+    [
+      "/test/a.wm",
+      `from js.global import type { Request as Thing }; export let id = (x: Thing) => { x };`,
+    ],
+    [
+      "/test/b.wm",
+      `from js.global import type { Request as Thing }; export let use = (x: Thing) => { x };`,
+    ],
+    [
+      "/test/main.wm",
+      `from "./a.wm" import * as A; from "./b.wm" import * as B; let ok = B.use(A.id(Panic("x")));`,
+    ],
+  ]);
+  await checkVirtual("/test/main.wm", shared);
+
+  const distinct = new Map<string, string>([
+    [
+      "/test/a.wm",
+      `from js.global import type { Request as Thing }; export let id = (x: Thing) => { x };`,
+    ],
+    [
+      "/test/b.wm",
+      `from js.global import type { Response as Thing }; export let use = (x: Thing) => { x };`,
+    ],
+    [
+      "/test/main.wm",
+      `from "./a.wm" import * as A; from "./b.wm" import * as B; let bad = B.use(A.id(Panic("x")));`,
+    ],
+  ]);
+  await assertRejects(() => checkVirtual("/test/main.wm", distinct), Error, "type mismatch");
+});
+
+Deno.test("delays foreign method reflection until downstream HM constrains the receiver", async () => {
+  const virtualFs = new Map<string, string>([
+    [
+      "/test/http.wm",
+      `
+        export let cloneResponse = () => {
+          (res) => {
+            res.clone()
+          }
+        };
+      `,
+    ],
+    [
+      "/test/server.wm",
+      `
+        from js.global import type { Response };
+        from "./http.wm" import { cloneResponse };
+        let useResponse = (handler: (Response) => Result<Js.Object, Js.Error>) => {
+          handler(Panic("response"))
+        };
+        let server = useResponse(cloneResponse());
+      `,
+    ],
+  ]);
+
+  const results = await checkVirtual("/test/server.wm", virtualFs);
+  const http = results.get("/test/http.wm");
+  if (!http) throw new Error("missing http result");
+  expectBinding(http.env, "cloneResponse", {
+    type: "(Void) => (Response) => Result<Js.Object, Js.Error>",
+    vars: 0,
+  });
+});
+
+Deno.test("delayed foreign methods provide callback parameter refs", async () => {
+  const virtualFs = new Map<string, string>([
+    [
+      "/test/events.wm",
+      `
+        export let listen = () => {
+          (target) => {
+            target.addEventListener("click", (evt) => {
+              let isTrusted = evt.isTrusted;
+            })
+          }
+        };
+      `,
+    ],
+    [
+      "/test/main.wm",
+      `
+        from js.global import type { EventTarget };
+        from "./events.wm" import { listen };
+        let use = (handler: (EventTarget) => Result<Void, Js.Error>) => {
+          handler(Panic("target"))
+        };
+        let installed = use(listen());
+      `,
+    ],
+  ]);
+
+  const results = await checkVirtual("/test/main.wm", virtualFs);
+  const events = results.get("/test/events.wm");
+  if (!events) throw new Error("missing events result");
+  expectBinding(events.env, "listen", {
+    type: "(Void) => (EventTarget) => Result<Void, Js.Error>",
+    vars: 0,
+  });
+});
+
 Deno.test("reflected JS overload sets are not bare HM values", async () => {
   await assertRejects(
     () =>

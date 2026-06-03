@@ -45,6 +45,9 @@ export function hasUnguardedRecursiveRef(
       return expr.items.some((item) => hasUnguardedRecursiveRef(item, names, guarded));
     case "FfiGet":
       return hasUnguardedRecursiveRef(expr.receiver, names, guarded);
+    case "FfiCall":
+      return hasUnguardedRecursiveRef(expr.receiver, names, guarded) ||
+        expr.args.some((arg) => hasUnguardedRecursiveRef(arg, names, guarded));
     case "Lambda":
       return hasUnguardedRecursiveRef(expr.body, names, true);
     case "Call":

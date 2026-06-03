@@ -10,6 +10,7 @@ import {
   baseEnv,
   baseTypeEnv,
   type Env,
+  type FfiObligation,
   ftv,
   type Scheme,
   show,
@@ -31,6 +32,7 @@ export type InferResult = {
   adts: Map<number, TypeDeclInfo>;
   warnings: string[];
   diagnostics: FrontendDiagnostic[];
+  ffiObligations: FfiObligation[];
 };
 
 export { describeEnv, type TypeSnapshot } from "./infer/snapshots.ts";
@@ -53,6 +55,7 @@ export function inferModuleWithSteps(
   const types = new Map<Expr, Ty>();
   const warnings: string[] = [];
   const diagnostics: FrontendDiagnostic[] = [];
+  const ffiObligations: FfiObligation[] = [];
   const steps: InferStep[] = [];
   const provenance: TypeProvenance = new Map();
 
@@ -83,6 +86,7 @@ export function inferModuleWithSteps(
         diagnostics,
         exportableTypeIds,
         provenance,
+        ffiObligations,
       );
     } catch (error) {
       throw diagnosticError(error, decl.node);
@@ -109,6 +113,7 @@ export function inferModuleWithSteps(
       adts,
       warnings,
       diagnostics,
+      ffiObligations,
     },
     steps,
   };

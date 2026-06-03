@@ -190,6 +190,10 @@ function visitChildren(node: Expr, visit: (node: Expr) => void) {
     case "FfiGet":
       visit(node.receiver);
       break;
+    case "FfiCall":
+      visit(node.receiver);
+      node.args.forEach(visit);
+      break;
     case "Lambda":
       visit(node.body);
       break;

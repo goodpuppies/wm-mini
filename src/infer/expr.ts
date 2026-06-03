@@ -8,9 +8,11 @@ import {
 import {
   BoolTy,
   type Env,
+  type FfiObligation,
   fn,
   fresh,
   instantiate,
+  instantiateWithObligations,
   named,
   NumberTy,
   prune,
@@ -47,9 +49,20 @@ export function inferExpr(
   warnings: string[] = [],
   diagnostics: FrontendDiagnostic[] = [],
   provenance: TypeProvenance = new Map(),
+  ffiObligations: FfiObligation[] = [],
 ): Ty {
   try {
-    return inferExprInner(expr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+    return inferExprInner(
+      expr,
+      env,
+      typeEnv,
+      adts,
+      types,
+      warnings,
+      diagnostics,
+      provenance,
+      ffiObligations,
+    );
   } catch (error) {
     throw diagnosticError(error, expr.node);
   }
@@ -64,6 +77,7 @@ function inferExprInner(
   warnings: string[] = [],
   diagnostics: FrontendDiagnostic[] = [],
   provenance: TypeProvenance = new Map(),
+  ffiObligations: FfiObligation[] = [],
 ): Ty {
   let t: Ty;
   switch (expr.kind) {
@@ -86,13 +100,15 @@ function inferExprInner(
         t = inferDottedVar(expr.name, env, typeEnv);
         break;
       }
-      t = instantiate(scheme);
+      const instantiated = instantiateWithObligations(scheme);
+      t = instantiated.type;
+      ffiObligations.push(...instantiated.ffiObligations);
       break;
     }
     case "Tuple":
       t = tuple(
         expr.items.map((x) =>
-          inferExpr(x, env, typeEnv, adts, types, warnings, diagnostics, provenance)
+          inferExpr(x, env, typeEnv, adts, types, warnings, diagnostics, provenance, ffiObligations)
         ),
       );
       break;
@@ -100,7 +116,18 @@ function inferExprInner(
       t = inferRecordExpr(
         expr,
         typeEnv,
-        (value) => inferExpr(value, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+        (value) =>
+          inferExpr(
+            value,
+            env,
+            typeEnv,
+            adts,
+            types,
+            warnings,
+            diagnostics,
+            provenance,
+            ffiObligations,
+          ),
       );
       break;
     case "JsonObject":
@@ -114,6 +141,7 @@ function inferExprInner(
           warnings,
           diagnostics,
           provenance,
+          ffiObligations,
         );
         assertJsonCompatible(valueType, typeEnv, field.value);
       }
@@ -130,13 +158,42 @@ function inferExprInner(
           warnings,
           diagnostics,
           provenance,
+          ffiObligations,
         );
         assertJsonCompatible(itemType, typeEnv, item);
       }
       t = jsonValueTy(typeEnv);
       break;
     case "FfiGet": {
-      inferExpr(expr.receiver, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+      inferExpr(
+        expr.receiver,
+        env,
+        typeEnv,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+        ffiObligations,
+      );
+      t = ffiGetResultTy(typeEnv, fresh());
+      break;
+    }
+    case "FfiCall": {
+      inferExpr(
+        expr.receiver,
+        env,
+        typeEnv,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+        ffiObligations,
+      );
+      expr.args.forEach((arg) =>
+        inferExpr(arg, env, typeEnv, adts, types, warnings, diagnostics, provenance, ffiObligations)
+      );
       t = ffiGetResultTy(typeEnv, fresh());
       break;
     }
@@ -149,57 +206,177 @@ function inferExprInner(
       );
       t = fn(
         [callArg(params)],
-        inferExpr(expr.body, local, typeEnv, adts, types, warnings, diagnostics, provenance),
+        inferExpr(
+          expr.body,
+          local,
+          typeEnv,
+          adts,
+          types,
+          warnings,
+          diagnostics,
+          provenance,
+          ffiObligations,
+        ),
       );
       break;
     }
     case "Call":
-      t = inferCall(expr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+      t = inferCall(
+        expr,
+        env,
+        typeEnv,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+        ffiObligations,
+      );
       break;
     case "If":
       constrain(
-        inferExpr(expr.cond, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+        inferExpr(
+          expr.cond,
+          env,
+          typeEnv,
+          adts,
+          types,
+          warnings,
+          diagnostics,
+          provenance,
+          ffiObligations,
+        ),
         BoolTy,
       );
-      t = inferExpr(expr.thenExpr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+      t = inferExpr(
+        expr.thenExpr,
+        env,
+        typeEnv,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+        ffiObligations,
+      );
       constrain(
         t,
-        inferExpr(expr.elseExpr, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+        inferExpr(
+          expr.elseExpr,
+          env,
+          typeEnv,
+          adts,
+          types,
+          warnings,
+          diagnostics,
+          provenance,
+          ffiObligations,
+        ),
       );
       break;
     case "Match":
-      t = inferMatch(expr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+      t = inferMatch(
+        expr,
+        env,
+        typeEnv,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+        ffiObligations,
+      );
       break;
     case "Panic":
       constrain(
-        inferExpr(expr.message, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+        inferExpr(
+          expr.message,
+          env,
+          typeEnv,
+          adts,
+          types,
+          warnings,
+          diagnostics,
+          provenance,
+          ffiObligations,
+        ),
         StringTy,
       );
       t = fresh();
       break;
     case "Block":
-      t = inferBlock(expr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+      t = inferBlock(
+        expr,
+        env,
+        typeEnv,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+        ffiObligations,
+      );
       break;
     case "Binary":
-      t = inferBinary(expr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+      t = inferBinary(
+        expr,
+        env,
+        typeEnv,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+        ffiObligations,
+      );
       break;
     case "Unary":
       if (expr.op === "-") {
         constrain(
-          inferExpr(expr.value, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+          inferExpr(
+            expr.value,
+            env,
+            typeEnv,
+            adts,
+            types,
+            warnings,
+            diagnostics,
+            provenance,
+            ffiObligations,
+          ),
           NumberTy,
         );
         t = NumberTy;
       } else {
         constrain(
-          inferExpr(expr.value, env, typeEnv, adts, types, warnings, diagnostics, provenance),
+          inferExpr(
+            expr.value,
+            env,
+            typeEnv,
+            adts,
+            types,
+            warnings,
+            diagnostics,
+            provenance,
+            ffiObligations,
+          ),
           BoolTy,
         );
         t = BoolTy;
       }
       break;
     case "Pipe":
-      t = inferPipe(expr, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+      t = inferPipe(
+        expr,
+        env,
+        typeEnv,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+        ffiObligations,
+      );
       break;
   }
   types.set(expr, t);
@@ -215,6 +392,7 @@ function inferCall(
   warnings: string[],
   diagnostics: FrontendDiagnostic[],
   provenance: TypeProvenance,
+  ffiObligations: FfiObligation[],
 ): Ty {
   const result = fresh();
   const isPrintCall = expr.callee.kind === "Var" && expr.callee.name === "print";
@@ -227,13 +405,14 @@ function inferCall(
     warnings,
     diagnostics,
     provenance,
+    ffiObligations,
   );
   const calleeProvenance = expr.callee.kind === "Var"
     ? (env.get(expr.callee.name)?.provenance ?? [])
     : [];
   const arg = callArg(
     expr.args.map((a) =>
-      inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics, provenance)
+      inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics, provenance, ffiObligations)
     ),
   );
   const calleeFn = prune(callee);
@@ -305,6 +484,11 @@ function jsImportActualArg(expected: Ty, actual: Ty, typeEnv: TypeEnv): Ty {
     if (!jsObject) throw new Error("unknown type Js.Object");
     return named(jsObject);
   }
+  if (isJsValueType(expectedType, typeEnv) && isJsObjectLikeType(actualType, typeEnv)) {
+    const jsValue = typeEnv.get("Js.Value");
+    if (!jsValue) throw new Error("unknown type Js.Value");
+    return named(jsValue);
+  }
   if (expectedType.tag === "fn" && actualType.tag === "fn") {
     return fn(
       actualType.params.map((param, i) =>
@@ -338,9 +522,19 @@ function isForeignObjectType(type: Ty, typeEnv: TypeEnv): boolean {
   return t.tag === "named" && Boolean(t.foreign || typeEnv.get(t.name)?.foreign);
 }
 
+function isJsObjectLikeType(type: Ty, typeEnv: TypeEnv): boolean {
+  const t = prune(type);
+  return isJsObjectType(t, typeEnv) || isForeignObjectType(t, typeEnv);
+}
+
 function isJsObjectType(type: Ty, typeEnv: TypeEnv): boolean {
   const t = prune(type);
   return t.tag === "named" && t.id === typeEnv.get("Js.Object")?.id;
+}
+
+function isJsValueType(type: Ty, typeEnv: TypeEnv): boolean {
+  const t = prune(type);
+  return t.tag === "named" && t.id === typeEnv.get("Js.Value")?.id;
 }
 
 function assertPrintable(type: Ty) {
@@ -406,6 +600,7 @@ function inferMatch(
   warnings: string[],
   diagnostics: FrontendDiagnostic[],
   provenance: TypeProvenance,
+  ffiObligations: FfiObligation[],
 ): Ty {
   const valueType = inferExpr(
     expr.value,
@@ -416,6 +611,7 @@ function inferMatch(
     warnings,
     diagnostics,
     provenance,
+    ffiObligations,
   );
   const result = fresh();
   for (const arm of expr.arms) {
@@ -430,6 +626,7 @@ function inferMatch(
       warnings,
       diagnostics,
       provenance,
+      ffiObligations,
     );
     constrainAt(result, armType, arm.body, undefined, [], provenance, {
       message: "match arm result",
@@ -456,6 +653,7 @@ function inferBlock(
   warnings: string[],
   diagnostics: FrontendDiagnostic[],
   provenance: TypeProvenance,
+  ffiObligations: FfiObligation[],
 ): Ty {
   const local = new Map(env);
   const localTypes = new Map(typeEnv);
@@ -474,8 +672,19 @@ function inferBlock(
         diagnostics,
         new Set([...localTypes.values()].map((info) => info.id)),
         provenance,
+        ffiObligations,
       )
-      : inferExpr(s, local, localTypes, adts, types, warnings, diagnostics, provenance)
+      : inferExpr(
+        s,
+        local,
+        localTypes,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+        ffiObligations,
+      )
   );
   const result = inferExpr(
     expr.result,
@@ -486,6 +695,7 @@ function inferBlock(
     warnings,
     diagnostics,
     provenance,
+    ffiObligations,
   );
   if (mentionsLocalType(result, outerTypeIds)) throw new Error("local type escapes scope");
   return result;
@@ -500,12 +710,33 @@ function inferBinary(
   warnings: string[],
   diagnostics: FrontendDiagnostic[],
   provenance: TypeProvenance,
+  ffiObligations: FfiObligation[],
 ): Ty {
   const result = fresh();
   const op: Scheme | undefined = env.get(expr.op);
   if (!op) throw new Error(`unknown operator ${expr.op}`);
-  const left = inferExpr(expr.left, env, typeEnv, adts, types, warnings, diagnostics, provenance);
-  const right = inferExpr(expr.right, env, typeEnv, adts, types, warnings, diagnostics, provenance);
+  const left = inferExpr(
+    expr.left,
+    env,
+    typeEnv,
+    adts,
+    types,
+    warnings,
+    diagnostics,
+    provenance,
+    ffiObligations,
+  );
+  const right = inferExpr(
+    expr.right,
+    env,
+    typeEnv,
+    adts,
+    types,
+    warnings,
+    diagnostics,
+    provenance,
+    ffiObligations,
+  );
   constrain(
     instantiate(op),
     fn(
@@ -554,6 +785,7 @@ function inferPipe(
   warnings: string[],
   diagnostics: FrontendDiagnostic[],
   provenance: TypeProvenance,
+  ffiObligations: FfiObligation[],
 ): Ty {
   const leftType = inferExpr(
     expr.left,
@@ -564,6 +796,7 @@ function inferPipe(
     warnings,
     diagnostics,
     provenance,
+    ffiObligations,
   );
   const right = expr.right;
 
@@ -578,9 +811,10 @@ function inferPipe(
       warnings,
       diagnostics,
       provenance,
+      ffiObligations,
     );
     const argTypes = right.args.map((a) =>
-      inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics, provenance)
+      inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics, provenance, ffiObligations)
     );
     const allArgs = [leftType, ...argTypes];
     const argType = callArg(allArgs);
@@ -615,6 +849,7 @@ function inferPipe(
       warnings,
       diagnostics,
       provenance,
+      ffiObligations,
     );
     const result = fresh();
     constrainAt(
@@ -647,6 +882,7 @@ function inferPipe(
       warnings,
       diagnostics,
       provenance,
+      ffiObligations,
     );
     const result = fresh();
     constrainAt(

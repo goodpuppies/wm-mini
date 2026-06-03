@@ -7,7 +7,7 @@ export type Module = Located<{ kind: "Module"; decls: Decl[] }>;
 export type Decl =
   | Located<{ kind: "ImportDecl"; path: string; pathNode?: AstNode; clause: ImportClause }>
   | Located<{ kind: "JsImportDecl"; target: JsTarget; clause: JsImportClause; typeOnly?: boolean }>
-  | Located<{ kind: "ForeignTypeDecl"; name: string }>
+  | Located<{ kind: "ForeignTypeDecl"; name: string; foreignKey?: string }>
   | Located<{ kind: "LetDecl"; exported: boolean; recursive: boolean; bindings: Binding[] }>
   | Located<{
     kind: "RecordDecl";
@@ -63,6 +63,7 @@ export type Expr =
   | Located<{ kind: "JsonObject"; fields: JsonObjectField[] }>
   | Located<{ kind: "JsonArray"; items: Expr[] }>
   | Located<{ kind: "FfiGet"; receiver: Expr; path: string[] }>
+  | Located<{ kind: "FfiCall"; receiver: Expr; path: string[]; args: Expr[] }>
   | Located<{ kind: "Lambda"; params: Param[]; body: Expr }>
   | Located<{ kind: "Call"; callee: Expr; args: Expr[] }>
   | Located<{ kind: "If"; cond: Expr; thenExpr: Expr; elseExpr: Expr }>

@@ -1,0 +1,224 @@
+import type { Decl, Expr, JsImportSpec, JsTarget, Module, Param, TypeExpr } from "../ast.ts";
+import type { JsCallArgHint, JsCallbackParamRefs, JsMemberType, JsTypeRef } from "./js_types.ts";
+
+export type FfiElaboration = {
+  module: Module;
+  bindings: Map<string, FfiBinding>;
+  foreignTypeRefs: Map<string, JsTypeRef>;
+  selected: Set<string>;
+};
+
+export type FfiBinding = {
+  surfaceName: string;
+  variants: FfiVariant[];
+  node?: Decl["node"];
+};
+
+export type FfiVariant = {
+  internalName: string;
+  memberName: string;
+  target: JsTarget;
+  type: TypeExpr;
+  resultRef?: JsTypeRef;
+  callbackParamRefs?: JsCallbackParamRefs[];
+  fallible: boolean;
+  node?: JsImportSpec["node"];
+};
+
+export function addVariants(
+  bindings: Map<string, FfiBinding>,
+  surfaceName: string,
+  memberName: string,
+  target: JsTarget,
+  variants: { type: TypeExpr; resultRef?: JsTypeRef; callbackParamRefs?: JsCallbackParamRefs[] }[],
+  fallible: boolean,
+  node?: JsImportSpec["node"],
+) {
+  const binding = bindings.get(surfaceName) ?? { surfaceName, variants: [] };
+  for (const variant of dedupeVariantSpecs(variants)) {
+    const index = binding.variants.length;
+    binding.variants.push({
+      internalName: ffiInternalName(surfaceName, memberName, index),
+      memberName,
+      target,
+      type: fallible ? fallibleType(variant.type) : variant.type,
+      resultRef: variant.resultRef,
+      callbackParamRefs: variant.callbackParamRefs,
+      fallible,
+      node,
+    });
+  }
+  bindings.set(surfaceName, binding);
+}
+
+export function generatedReceiverJsImports(
+  bindings: Map<string, FfiBinding>,
+  selected: Set<string>,
+): Decl[] {
+  const variants = [...bindings.values()]
+    .flatMap((binding) => binding.variants)
+    .filter((variant) =>
+      selected.has(variant.internalName) &&
+      (variant.target.kind === "JsReceiver" || variant.target.kind === "JsConstructor")
+    );
+  return variants.map((variant) => ({
+    kind: "JsImportDecl" as const,
+    target: variant.target,
+    clause: {
+      kind: "Named" as const,
+      specs: [{
+        name: variant.memberName,
+        alias: variant.internalName,
+        type: variant.type,
+        fallible: variant.fallible,
+        node: variant.node,
+      }],
+    },
+  }));
+}
+
+export function memberVariants(
+  member: JsMemberType,
+): { type: TypeExpr; resultRef?: JsTypeRef; callbackParamRefs?: JsCallbackParamRefs[] }[] {
+  if (member.variants) return member.variants;
+  return [member.type, ...(member.overloads ?? [])].map((type) => ({ type }));
+}
+
+export function refsForCallbackArg(
+  refs: Map<string, JsTypeRef>,
+  arg: Expr,
+  paramRefs: JsTypeRef[] | undefined,
+): Map<string, JsTypeRef> {
+  if (arg.kind !== "Lambda" || !paramRefs?.length) return refs;
+  const localRefs = new Map(refs);
+  for (let index = 0; index < arg.params.length; index++) {
+    const binder = paramBinder(arg.params[index]);
+    const ref = paramRefs[index];
+    if (binder && ref) localRefs.set(binder, ref);
+  }
+  return localRefs;
+}
+
+export function paramBinder(param: Param): string | undefined {
+  return param.pattern.kind === "PVar" ? param.pattern.name : undefined;
+}
+
+export function callArgHint(expr: Expr): JsCallArgHint {
+  if (expr.kind === "String") return { kind: "string", value: expr.value };
+  if (expr.kind === "Lambda") return { kind: "function", arity: expr.params.length };
+  return { kind: "unknown" };
+}
+
+export function prependReceiver(
+  type: TypeExpr,
+  receiverType: TypeExpr = name("Js.Object"),
+): TypeExpr {
+  if (type.kind !== "TFn") return fn([receiverType], type);
+  return { ...type, params: [receiverType, ...type.params] };
+}
+
+export function selectVariant(variants: FfiVariant[], args: Expr[]): FfiVariant | undefined {
+  return variants
+    .filter((candidate) => typeCallArity(candidate.type) === args.length)
+    .map((candidate) => ({ candidate, score: callScore(candidate.type, args) }))
+    .sort((left, right) => left.score - right.score)[0]?.candidate;
+}
+
+export function ffiOverloadMessage(name: string, variants: FfiVariant[], args: Expr[]): string {
+  const arities = [...new Set(variants.map((variant) => typeCallArity(variant.type)))].sort();
+  return `cannot determine JS FFI overload for ${name} with ${args.length} arguments${
+    arities.length ? `; available arities: ${arities.join(", ")}` : ""
+  }`;
+}
+
+function callScore(type: TypeExpr, args: Expr[]): number {
+  if (type.kind !== "TFn") return Number.POSITIVE_INFINITY;
+  return type.params.reduce((score, param, index) => score + argScore(param, args[index]), 0);
+}
+
+function argScore(expected: TypeExpr, arg: Expr): number {
+  const actual = literalType(arg);
+  if (!actual) return 1;
+  if (expected.kind === "TName" && expected.name === actual) return 0;
+  if (expected.kind === "TName" && expected.name === "Js.Value") return 2;
+  return 10;
+}
+
+function literalType(expr: Expr): string | undefined {
+  switch (expr.kind) {
+    case "Int":
+    case "Float":
+      return "Number";
+    case "String":
+      return "String";
+    case "Bool":
+      return "Bool";
+    case "Void":
+      return "Void";
+    case "JsonObject":
+    case "JsonArray":
+      return "Js.Value";
+    default:
+      return undefined;
+  }
+}
+
+function dedupeVariantSpecs<T extends { type: TypeExpr }>(types: T[]): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const type of types) {
+    const key = typeKey(type.type);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(type);
+  }
+  return result;
+}
+
+export function name(typeName: string): TypeExpr {
+  return { kind: "TName", name: typeName, args: [] };
+}
+
+export function fn(params: TypeExpr[], result: TypeExpr): TypeExpr {
+  return { kind: "TFn", params, result };
+}
+
+function fallibleType(type: TypeExpr): TypeExpr {
+  if (type.kind !== "TFn") return result(type);
+  return { ...type, result: result(type.result) };
+}
+
+function result(ok: TypeExpr): TypeExpr {
+  return { kind: "TName", name: "Result", args: [ok, name("Js.Error")] };
+}
+
+function typeKey(type: TypeExpr): string {
+  switch (type.kind) {
+    case "TName":
+      return `${type.name}<${type.args.map(typeKey).join(",")}>`;
+    case "TVar":
+      return `'${type.name}`;
+    case "TTuple":
+      return `(${type.items.map(typeKey).join(",")})`;
+    case "TFn":
+      return `(${type.params.map(typeKey).join(",")})->${typeKey(type.result)}`;
+  }
+}
+
+function ffiInternalName(surfaceName: string, memberName: string, index: number): string {
+  return `__ffi_${sanitize(surfaceName)}_${sanitize(memberName)}_${index}`;
+}
+
+function typeCallArity(type: TypeExpr): number | undefined {
+  return type.kind === "TFn" ? type.params.length : undefined;
+}
+
+export function isDecl(value: Decl | Expr): value is Decl {
+  return "kind" in value &&
+    (value.kind === "ImportDecl" || value.kind === "JsImportDecl" || value.kind === "LetDecl" ||
+      value.kind === "RecordDecl" || value.kind === "TypeDecl" || value.kind === "ForeignTypeDecl");
+}
+
+function sanitize(value: string): string {
+  return value.replaceAll(/[^a-zA-Z0-9_]/g, "_");
+}

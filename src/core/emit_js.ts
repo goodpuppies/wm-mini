@@ -1,8 +1,9 @@
 import type { CoreDecl, CoreExpr, CoreMatchArm, CorePattern } from "./ast.ts";
 import type { CoreDynamicExport, CoreModuleArtifact, CoreProgram } from "./artifact.ts";
 import type { BindingId } from "./ids.ts";
-import { basisCtorJsName, basisTypes } from "../basis.ts";
+import { basisCtorJsName } from "../basis.ts";
 import type { JsImportSpec, TypeExpr } from "../ast.ts";
+import { emitRuntimePrelude } from "./emit_prelude.ts";
 
 const reserved = new Set([
   "const",
@@ -20,130 +21,7 @@ export function emitCoreProgram(program: CoreProgram): string {
   const entry = program.modules.get(program.entry)!;
   const main = mainRef(entry);
   return [
-    '"use strict";',
-    "const __wm_tuple_tag = Symbol('wm.tuple');",
-    "const __wm_tuple = (...items) => Object.assign(items, { [__wm_tuple_tag]: true });",
-    "const __wm_is_tuple = (value) => globalThis.Array.isArray(value) && value[__wm_tuple_tag] === true;",
-    `const __wm_js_global = (path) => path.split(".").reduce((value, key) => value?.[key], globalThis);`,
-    `const __wm_js_member = (path) => {
-  const parts = path.split(".");
-  const key = parts.pop();
-  const owner = parts.length === 0 ? globalThis : __wm_js_global(parts.join("."));
-  const value = owner?.[key];
-  return typeof value === "function" ? value.bind(owner) : value;
-};`,
-    `const __wm_js_member_obj = (owner, key) => {
-  const value = owner?.[key];
-  return typeof value === "function" ? value.bind(owner) : value;
-};`,
-    `const __wm_js_receiver_member = (path) => (receiver, ...args) => {
-  const owner = path.slice(0, -1).reduce((value, key) => value?.[key], receiver);
-  const value = owner?.[path[path.length - 1]];
-  return typeof value === "function" ? value.apply(owner, args) : value;
-};`,
-    `const __wm_js_construct = (path) => (...args) => new (__wm_js_global(path))(...args);`,
-    `const __wm_js_call = (fn, arg) => __wm_is_tuple(arg) ? fn(...arg) : fn(arg);`,
-    `const __wm_js_option_wrap = (value) => value == null ? __wm_basis_None : __wm_basis_Some(value);`,
-    `const __wm_js_option_unwrap = (value) => value?.ctor === -1 ? undefined : value?.ctor === -2 ? value.args[0] : value;`,
-    `const __wm_js_to_workman = (value, converter) => {
-  if (converter === "option") return __wm_js_option_wrap(value);
-  if (typeof converter === "object" && converter.kind === "fn") {
-    return (...args) => __wm_js_to_workman(
-      value(...args.map((arg, index) => __wm_js_to_js(arg, converter.params[index] ?? "id"))),
-      converter.result,
-    );
-  }
-  return value;
-};`,
-    `const __wm_js_to_js = (value, converter) => {
-  if (converter === "option") return __wm_js_option_unwrap(value);
-  if (typeof converter === "object" && converter.kind === "fn") {
-    return (...args) => {
-      const converted = args.map((arg, index) => __wm_js_to_workman(arg, converter.params[index] ?? "id"));
-      const expected = converter.params.length;
-      const limited = converted.slice(0, expected);
-      const workmanArg = limited.length === 0 ? undefined : limited.length === 1 ? limited[0] : __wm_tuple(...limited);
-      return __wm_js_to_js(
-        value(workmanArg),
-        converter.result,
-      );
-    };
-  }
-  return value;
-};`,
-    `const __wm_js_apply = (fn, arg, converters, resultConverter, fallible) => {
-  const raw = converters.length === 0 ? [] : converters.length === 1 ? [arg] : (__wm_is_tuple(arg) ? Array.from(arg) : [arg]);
-  const args = raw.map((value, index) => __wm_js_to_js(value, converters[index] ?? "id"));
-  if (fallible) {
-    try {
-      return __wm_basis_Ok(__wm_js_to_workman(fn(...args), resultConverter));
-    } catch (error) {
-      return __wm_basis_Err(error);
-    }
-  }
-  return __wm_js_to_workman(fn(...args), resultConverter);
-};`,
-    `const __wm_eq = (a, b) => {
-  if (a === b) return true;
-  if (globalThis.Array.isArray(a) || globalThis.Array.isArray(b)) {
-    return globalThis.Array.isArray(a) && globalThis.Array.isArray(b) && a.length === b.length &&
-      a.every((item, index) => __wm_eq(item, b[index]));
-  }
-  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
-  if ("ctor" in a || "ctor" in b) {
-    return a.ctor === b.ctor && __wm_eq(a.args, b.args);
-  }
-  const ak = Object.keys(a).sort();
-  const bk = Object.keys(b).sort();
-  return ak.length === bk.length && ak.every((key, index) =>
-    key === bk[index] && __wm_eq(a[key], b[key])
-  );
-};`,
-    `const __wm_show = (value, seen = new WeakSet()) => {
-  if (value === undefined) return "void";
-  if (value === null) return "null";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (typeof value === "function") return "<function>";
-  if (typeof value !== "object") return String(value);
-  if (seen.has(value)) return "<cycle>";
-  seen.add(value);
-  let shown;
-  if (__wm_is_tuple(value)) {
-    shown = "(" + value.map((item) => __wm_show(item, seen)).join(", ") + ")";
-  } else if ("ctor" in value) {
-    shown = value.args.length === 0
-      ? value.name
-      : value.name + "(" + value.args.map((item) => {
-        if (__wm_is_tuple(item)) return item.map((part) => __wm_show(part, seen)).join(", ");
-        return __wm_show(item, seen);
-      }).join(", ") + ")";
-  } else if (globalThis.Array.isArray(value)) {
-    shown = "[" + value.map((item) => __wm_show(item, seen)).join(", ") + "]";
-  } else {
-    shown = "{ " + Object.keys(value).sort().map((key) => key + " = " + __wm_show(value[key], seen)).join(", ") + " }";
-  }
-  seen.delete(value);
-  return shown;
-};`,
-    "const print = (value) => console.log(__wm_show(value));",
-    "const __wm_fail = (name, message) => { const e = new Error(message); e.name = name; throw e; };",
-    ...emitBasisConstructors(),
-    "const __wm_op_concat = ([a, b]) => a + b;",
-    "const __wm_op_add = ([a, b]) => a + b;",
-    "const __wm_op_sub = (x) => __wm_is_tuple(x) ? x[0] - x[1] : -x;",
-    "const __wm_op_mul = ([a, b]) => a * b;",
-    "const __wm_op_div = ([a, b]) => a / b;",
-    "const __wm_op_mod = ([a, b]) => a % b;",
-    "const __wm_op_eq = ([a, b]) => __wm_eq(a, b);",
-    "const __wm_op_ne = ([a, b]) => !__wm_eq(a, b);",
-    "const __wm_op_lt = ([a, b]) => a < b;",
-    "const __wm_op_lte = ([a, b]) => a <= b;",
-    "const __wm_op_gt = ([a, b]) => a > b;",
-    "const __wm_op_gte = ([a, b]) => a >= b;",
-    "const __wm_op_and = ([a, b]) => a && b;",
-    "const __wm_op_or = ([a, b]) => a || b;",
-    "const __wm_op_not = (x) => !x;",
+    ...emitRuntimePrelude(),
     ...program.order
       .filter((path) => path !== program.entry)
       .map((path) => emitNamespace(program.modules.get(path)!, program)),
@@ -308,20 +186,6 @@ function resultOkType(type: TypeExpr): TypeExpr | undefined {
   return type.kind === "TName" && type.name === "Result" && type.args.length === 2
     ? type.args[0]
     : undefined;
-}
-
-function emitBasisConstructors(): string[] {
-  return basisTypes.flatMap((type) =>
-    type.ctors.map((ctor) =>
-      ctor.args.length
-        ? `const ${basisCtorJsName(ctor.id)} = (__payload) => ({ ctor: ${
-          JSON.stringify(ctor.id)
-        }, name: ${JSON.stringify(ctor.name)}, args: [__payload] });`
-        : `const ${basisCtorJsName(ctor.id)} = Object.freeze({ ctor: ${
-          JSON.stringify(ctor.id)
-        }, name: ${JSON.stringify(ctor.name)}, args: [] });`
-    )
-  );
 }
 
 function emitExpr(expr: CoreExpr): string {

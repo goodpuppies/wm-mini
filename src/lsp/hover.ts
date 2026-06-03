@@ -131,6 +131,8 @@ function collectExpr(expr: Expr): Target[] {
       return [...own, ...expr.items.flatMap(collectExpr)];
     case "FfiGet":
       return [...own, ...collectExpr(expr.receiver)];
+    case "FfiCall":
+      return [...own, ...collectExpr(expr.receiver), ...expr.args.flatMap(collectExpr)];
     case "Lambda":
       return [...own, ...expr.params.flatMap(collectParam), ...collectExpr(expr.body)];
     case "Call":

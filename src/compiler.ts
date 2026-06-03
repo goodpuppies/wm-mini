@@ -1,4 +1,4 @@
-import type { Module } from "./ast.ts";
+import type { Expr, Module } from "./ast.ts";
 import {
   type CoreProgram,
   coreProgramFromAnalysis,
@@ -6,7 +6,8 @@ import {
 } from "./core/artifact.ts";
 import { emitCoreProgram } from "./core/emit_js.ts";
 import { coreFromSurface } from "./core/from_surface.ts";
-import { prepareFfiElaboration, resolveDelayedFfiElaboration } from "./ffi/elab.ts";
+import { resolveDelayedFfiElaboration } from "./ffi/delayed.ts";
+import { prepareFfiElaboration } from "./ffi/elab.ts";
 import { inferModule, inferModuleWithSteps, type InferResult, type InferStep } from "./infer.ts";
 import {
   loadModuleGraph,
@@ -15,6 +16,7 @@ import {
   type VirtualFileSystem,
 } from "./module_graph.ts";
 import { parse, type Surface } from "./parser.ts";
+import { prune, show, type Ty } from "./types.ts";
 
 export type CompileOptions = ModuleGraphOptions;
 
@@ -114,6 +116,38 @@ export async function analyzeFile(
     node.module = prepared.module;
   }
   const results = new Map<string, InferResult>();
+  const firstResults = new Map<string, InferResult>();
+  for (const path of graph.order) {
+    const node = graph.nodes.get(path)!;
+    const imports = new Map<string, InferResult>();
+    for (const edge of node.imports) {
+      imports.set(edge.specifier, firstResults.get(edge.path)!);
+    }
+    try {
+      firstResults.set(path, inferModule(node.module, imports));
+    } catch (error) {
+      throw new ModuleAnalysisError(path, node.source, error);
+    }
+  }
+  const receiverOverrides = delayedReceiverOverrides(graph, firstResults);
+  const foreignTypeRefs = new Map(
+    [...ffi.values()].flatMap((item) =>
+      [...item.foreignTypeRefs.values()].map((ref) => [ref.key, ref])
+    ),
+  );
+  for (const path of graph.order) {
+    const node = graph.nodes.get(path)!;
+    try {
+      const prepared = ffi.get(path)!;
+      const resolved = resolveDelayedFfiElaboration(prepared, firstResults.get(path)!, {
+        receiverTypes: receiverOverrides.get(path),
+        foreignTypeRefs,
+      });
+      node.module = resolved.module;
+    } catch (error) {
+      throw new ModuleAnalysisError(path, node.source, error);
+    }
+  }
   for (const path of graph.order) {
     const node = graph.nodes.get(path)!;
     const imports = new Map<string, InferResult>();
@@ -121,16 +155,119 @@ export async function analyzeFile(
       imports.set(edge.specifier, results.get(edge.path)!);
     }
     try {
-      const first = inferModule(node.module, imports);
-      const prepared = ffi.get(path)!;
-      const resolved = resolveDelayedFfiElaboration(prepared, first);
-      node.module = resolved.module;
       results.set(path, inferModule(node.module, imports));
     } catch (error) {
       throw new ModuleAnalysisError(path, node.source, error);
     }
   }
   return { graph, results };
+}
+
+function delayedReceiverOverrides(
+  graph: ModuleGraph,
+  results: Map<string, InferResult>,
+): Map<string, Map<Expr, Ty>> {
+  const sourceOwners = new Map<Expr, string>();
+  for (const node of graph.nodes.values()) {
+    collectFfiGetSources(node.module, (expr) => sourceOwners.set(expr, node.path));
+  }
+  const overrides = new Map<string, Map<Expr, Ty>>();
+  for (const result of results.values()) {
+    for (const obligation of result.ffiObligations) {
+      const path = sourceOwners.get(obligation.source);
+      if (!path) continue;
+      const receiver = prune(obligation.receiver);
+      const moduleOverrides = overrides.get(path) ?? new Map<Expr, Ty>();
+      const existing = moduleOverrides.get(obligation.source);
+      if (existing && show(prune(existing)) !== show(receiver)) {
+        throw new Error(
+          `conflicting JS FFI receiver types for ${obligation.path.join(".")}: ${
+            show(prune(existing))
+          } vs ${show(receiver)}`,
+        );
+      }
+      moduleOverrides.set(obligation.source, receiver);
+      overrides.set(path, moduleOverrides);
+    }
+  }
+  return overrides;
+}
+
+function collectFfiGetSources(
+  module: Module,
+  visit: (expr: Extract<Expr, { kind: "FfiGet" | "FfiCall" }>) => void,
+) {
+  for (const decl of module.decls) {
+    if (decl.kind === "LetDecl") {
+      for (const binding of decl.bindings) collectFfiGetExprs(binding.value, visit);
+    }
+  }
+}
+
+function collectFfiGetExprs(
+  expr: Expr,
+  visit: (expr: Extract<Expr, { kind: "FfiGet" | "FfiCall" }>) => void,
+) {
+  if (expr.kind === "FfiGet") {
+    visit(expr);
+    collectFfiGetExprs(expr.receiver, visit);
+    return;
+  }
+  if (expr.kind === "FfiCall") {
+    visit(expr);
+    collectFfiGetExprs(expr.receiver, visit);
+    expr.args.forEach((arg) => collectFfiGetExprs(arg, visit));
+    return;
+  }
+  switch (expr.kind) {
+    case "Tuple":
+    case "JsonArray":
+      expr.items.forEach((item) => collectFfiGetExprs(item, visit));
+      return;
+    case "Record":
+    case "JsonObject":
+      expr.fields.forEach((field) => collectFfiGetExprs(field.value, visit));
+      return;
+    case "Lambda":
+      collectFfiGetExprs(expr.body, visit);
+      return;
+    case "Call":
+      collectFfiGetExprs(expr.callee, visit);
+      expr.args.forEach((arg) => collectFfiGetExprs(arg, visit));
+      return;
+    case "If":
+      collectFfiGetExprs(expr.cond, visit);
+      collectFfiGetExprs(expr.thenExpr, visit);
+      collectFfiGetExprs(expr.elseExpr, visit);
+      return;
+    case "Match":
+      collectFfiGetExprs(expr.value, visit);
+      expr.arms.forEach((arm) => collectFfiGetExprs(arm.body, visit));
+      return;
+    case "Panic":
+      collectFfiGetExprs(expr.message, visit);
+      return;
+    case "Block":
+      for (const item of expr.items) {
+        if (item.kind === "LetDecl") {
+          item.bindings.forEach((binding) => collectFfiGetExprs(binding.value, visit));
+        } else if (
+          item.kind !== "ImportDecl" && item.kind !== "JsImportDecl" &&
+          item.kind !== "ForeignTypeDecl" && item.kind !== "RecordDecl" && item.kind !== "TypeDecl"
+        ) {
+          collectFfiGetExprs(item, visit);
+        }
+      }
+      collectFfiGetExprs(expr.result, visit);
+      return;
+    case "Binary":
+      collectFfiGetExprs(expr.left, visit);
+      collectFfiGetExprs(expr.right, visit);
+      return;
+    case "Unary":
+      collectFfiGetExprs(expr.value, visit);
+      return;
+  }
 }
 
 function checkPreparedModuleWithoutImports(

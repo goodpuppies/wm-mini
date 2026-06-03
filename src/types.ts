@@ -1,5 +1,5 @@
 import type { AstNode } from "./source.ts";
-import type { CtorDecl, TypeExpr } from "./ast.ts";
+import type { CtorDecl, Expr, TypeExpr } from "./ast.ts";
 import { basisTypes } from "./basis.ts";
 
 export type Ty =
@@ -7,7 +7,14 @@ export type Ty =
   | { tag: "prim"; name: string }
   | { tag: "fn"; params: Ty[]; result: Ty }
   | { tag: "tuple"; items: Ty[] }
-  | { tag: "named"; id: number; name: string; args: Ty[]; foreign?: boolean };
+  | {
+    tag: "named";
+    id: number;
+    name: string;
+    args: Ty[];
+    foreign?: boolean;
+    foreignKey?: string;
+  };
 
 export type Constraint = { kind: "Eq"; left: Ty; right: Ty };
 export type IdentifierStatus = "value" | "constructor";
@@ -15,10 +22,19 @@ export type Scheme = {
   vars: number[];
   type: Ty;
   constraints?: Constraint[];
+  ffiObligations?: FfiObligation[];
   status?: IdentifierStatus;
   basis?: boolean;
   provenance?: TypeProvenanceNote[];
   jsImport?: boolean;
+};
+export type FfiObligation = {
+  source: Expr;
+  receiverExpr: Expr;
+  path: string[];
+  receiver: Ty;
+  value: Ty;
+  result: Ty;
 };
 export type TypeProvenanceNote = {
   message: string;
@@ -35,6 +51,7 @@ export type TypeInfo = {
   basis?: boolean;
   basisConstructors?: string[];
   foreign?: boolean;
+  foreignKey?: string;
   alias?: Ty;
   aliasParams?: number[];
   recordFields?: RecordFieldInfo[];
@@ -63,6 +80,7 @@ export const named = (info: TypeInfo, args: Ty[] = []): Ty => ({
   name: info.name,
   args,
   foreign: info.foreign,
+  foreignKey: info.foreignKey,
 });
 export const freshTypeInfo = (name: string, arity: number): TypeInfo => ({
   id: nextType++,
@@ -174,6 +192,12 @@ export function generalize(env: Env, type: Ty): Scheme {
 }
 
 export function instantiate(scheme: Scheme): Ty {
+  return instantiateWithObligations(scheme).type;
+}
+
+export function instantiateWithObligations(
+  scheme: Scheme,
+): { type: Ty; ffiObligations: FfiObligation[] } {
   const map = new Map<number, Ty>();
   for (const id of scheme.vars) map.set(id, fresh());
   const go = (t: Ty): Ty => {
@@ -184,7 +208,15 @@ export function instantiate(scheme: Scheme): Ty {
     if (t.tag === "named") return { ...t, args: t.args.map(go) };
     return t;
   };
-  return go(scheme.type);
+  return {
+    type: go(scheme.type),
+    ffiObligations: (scheme.ffiObligations ?? []).map((obligation) => ({
+      ...obligation,
+      receiver: go(obligation.receiver),
+      value: go(obligation.value),
+      result: go(obligation.result),
+    })),
+  };
 }
 
 export function substituteTypeVars(template: Ty, subst: Map<number, Ty>): Ty {
