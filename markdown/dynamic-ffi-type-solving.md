@@ -397,6 +397,103 @@ The current order forces TS reflection to guess before HM has connected the prog
 order lets HM first establish where foreign types flow, then lets TS answer only the local
 JavaScript questions attached to those inferred foreign types.
 
+## Boundary Representation Compatibility
+
+The FFI should avoid requiring explicit wrapper code when a Workman value and a JavaScript value
+have the same simple runtime shape. This is an FFI boundary rule, not an HM rule.
+
+For example, if a JavaScript function expects a plain options object, a Workman record with matching
+fields should be able to cross the JS boundary without the programmer writing a manual
+record-to-object conversion:
+
+```wm
+record SpawnOptions = {
+  stdio: Js.Value,
+  env: Js.Value
+};
+
+let opts = SpawnOptions {
+  stdio = JSON["ignore", "pipe", "inherit"],
+  env = JSON{ "USER_AGENT": "Workman-FFI" }
+};
+
+spawn("curl", args, opts)
+```
+
+At the JS boundary, `opts` can be passed as a plain JS object:
+
+```js
+{ stdio: ..., env: ... }
+```
+
+Likewise, fixed Workman tuples may be useful for JS APIs that expect tuple-like values, small arrays,
+or argument-list-shaped data. The important distinction is:
+
+```txt
+Inside HM:
+  records are Workman records
+  tuples are Workman tuples
+  neither becomes a JS object/array type by subtyping
+
+At JS FFI boundaries:
+  records may adapt to plain JS objects when field shapes are compatible
+  tuples may adapt to JS tuple-like arrays or argument lists when the target shape is known
+```
+
+This keeps the SML model intact while reducing interop noise. The user should not need to write
+`recordToObject` or `tupleToArray` every time the shapes already match.
+
+The end goal is to avoid a split programming style where ordinary Workman data looks structurally
+identical to JavaScript data, but still cannot cross the boundary without forcing the programmer into
+a separate "JS-style Workman" layer. If a record-shaped Workman value and a plain JS options object
+have the same practical shape, interop should feel like passing the value, not like switching into a
+different mini-language of wrapper objects and conversion helpers.
+
+That split can be forced in several different ways:
+
+- ergonomics: ordinary code becomes a pile of `toJsObject`, `fromJsArray`, and adapter calls;
+- representability: a natural Workman value cannot express the shape a JS API expects;
+- annotation pressure: the program works only after extreme manual type annotations;
+- workaround pressure: code becomes verbose or obscure just to satisfy the FFI layer;
+- surprising incompatibility: `thing_wm` and `thing_js` look identical but are not actually usable
+  in the same place;
+- performance: identical-looking shapes still require allocation-heavy conversion at every
+  boundary.
+
+This is an ergonomics goal, not an immediate runtime-layout commitment. The compiler can preserve
+ML semantics first and decide later which representations are safe and cheap enough to pass through
+directly.
+
+The reverse direction should be more conservative:
+
+```txt
+Workman record -> JS object:
+  lightweight outgoing conversion/adaptation
+
+JS object -> Workman record:
+  reflected construction or explicit fallible decode/check
+
+Workman tuple -> JS tuple-like array:
+  boundary adaptation when the target expects that shape
+
+JS array -> Workman tuple:
+  explicit fallible arity/type decode
+```
+
+Typed arrays should remain foreign JS objects, not Workman tuples. A `Uint8Array` is mutable indexed
+JS memory; an SML tuple is a fixed product value. Converting between them should be an explicit
+helper or reflected API operation, not an implicit type equivalence.
+
+This also has a performance motivation. If the generated JavaScript representation for a Workman
+record or tuple is already compatible with the target JS shape, the boundary should be able to pass
+it through or adapt it cheaply. The compiler should still treat that as representation
+compatibility, not semantic identity. The invariant is:
+
+```txt
+same runtime shape may allow cheap FFI passing
+same runtime shape does not imply same Workman type meaning
+```
+
 ## Soundness Boundaries
 
 This is an FFI extension to the ML core, not a new general type-system feature.
@@ -406,6 +503,8 @@ Rules:
 - Foreign types are nominal HM types.
 - Foreign types are not equal to `Js.Object` in ordinary Workman code.
 - Foreign types are representation-compatible with JS imports and JS-generated receiver calls.
+- Workman records and tuples may be representation-compatible with JS object/tuple-like shapes only
+  at JS FFI boundaries.
 - JS property access is not an HM rule; it is an unresolved FFI operation resolved outside HM.
 - Final rewritten code must pass HM verification.
 
