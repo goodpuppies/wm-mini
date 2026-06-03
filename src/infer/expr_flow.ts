@@ -1,0 +1,283 @@
+import type { Expr, Param } from "../ast.ts";
+import { type FrontendDiagnostic, warningDiagnostic } from "../diagnostics.ts";
+import {
+  type Env,
+  type FfiObligation,
+  fn,
+  fresh,
+  instantiate,
+  quoteType,
+  type Scheme,
+  tuple,
+  type Ty,
+  type TypeDeclInfo,
+  type TypeEnv,
+  typeFromAst,
+  type TypeVarScope,
+} from "../types.ts";
+import { isDecl } from "./ast_utils.ts";
+import { inferDecl } from "./decl.ts";
+import { assertEqualityType } from "./equality.ts";
+import { checkExhaustive, mentionsLocalType } from "./exhaustiveness.ts";
+import { warnRedundantMatchArms } from "./decl_helpers.ts";
+import { inferPattern } from "./patterns.ts";
+import { constrainAt, rememberProvenance, type TypeProvenance } from "./provenance.ts";
+import { callArg, constrain } from "./shared.ts";
+import { inferExpr } from "./expr.ts";
+import { callArity } from "./expr_call.ts";
+
+export function inferMatch(
+  expr: Extract<Expr, { kind: "Match" }>,
+  env: Env,
+  typeEnv: TypeEnv,
+  adts: Map<number, TypeDeclInfo>,
+  types: Map<Expr, Ty>,
+  warnings: string[],
+  diagnostics: FrontendDiagnostic[],
+  provenance: TypeProvenance,
+  ffiObligations: FfiObligation[],
+): Ty {
+  const valueType = inferExpr(
+    expr.value,
+    env,
+    typeEnv,
+    adts,
+    types,
+    warnings,
+    diagnostics,
+    provenance,
+    ffiObligations,
+  );
+  const result = fresh();
+  for (const arm of expr.arms) {
+    const local = new Map(env);
+    inferPattern(arm.pattern, valueType, local, typeEnv, adts);
+    const armType = inferExpr(
+      arm.body,
+      local,
+      typeEnv,
+      adts,
+      types,
+      warnings,
+      diagnostics,
+      provenance,
+      ffiObligations,
+    );
+    constrainAt(result, armType, arm.body, undefined, [], provenance, {
+      message: "match arm result",
+      node: arm.body.node,
+      span: arm.body.node?.span,
+    });
+  }
+  const armPatterns = expr.arms.map((arm) => arm.pattern);
+  warnRedundantMatchArms(armPatterns, valueType, typeEnv, adts, warnings, diagnostics);
+  const exhaustiveWarning = checkExhaustive(armPatterns, valueType, typeEnv, adts);
+  if (exhaustiveWarning) {
+    warnings.push(exhaustiveWarning);
+    diagnostics.push(warningDiagnostic(exhaustiveWarning, expr.node, "pattern.non-exhaustive"));
+  }
+  return result;
+}
+
+export function inferBlock(
+  expr: Extract<Expr, { kind: "Block" }>,
+  env: Env,
+  typeEnv: TypeEnv,
+  adts: Map<number, TypeDeclInfo>,
+  types: Map<Expr, Ty>,
+  warnings: string[],
+  diagnostics: FrontendDiagnostic[],
+  provenance: TypeProvenance,
+  ffiObligations: FfiObligation[],
+): Ty {
+  const local = new Map(env);
+  const localTypes = new Map(typeEnv);
+  const outerTypeIds = new Set([...typeEnv.values()].map((info) => info.id));
+  expr.items.forEach((s) =>
+    isDecl(s)
+      ? inferDecl(
+        s,
+        local,
+        new Map(),
+        localTypes,
+        new Map(),
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        new Set([...localTypes.values()].map((info) => info.id)),
+        provenance,
+        ffiObligations,
+      )
+      : inferExpr(
+        s,
+        local,
+        localTypes,
+        adts,
+        types,
+        warnings,
+        diagnostics,
+        provenance,
+        ffiObligations,
+      )
+  );
+  const result = inferExpr(
+    expr.result,
+    local,
+    localTypes,
+    adts,
+    types,
+    warnings,
+    diagnostics,
+    provenance,
+    ffiObligations,
+  );
+  if (mentionsLocalType(result, outerTypeIds)) throw new Error("local type escapes scope");
+  return result;
+}
+
+export function inferBinary(
+  expr: Extract<Expr, { kind: "Binary" }>,
+  env: Env,
+  typeEnv: TypeEnv,
+  adts: Map<number, TypeDeclInfo>,
+  types: Map<Expr, Ty>,
+  warnings: string[],
+  diagnostics: FrontendDiagnostic[],
+  provenance: TypeProvenance,
+  ffiObligations: FfiObligation[],
+): Ty {
+  const result = fresh();
+  const op: Scheme | undefined = env.get(expr.op);
+  if (!op) throw new Error(`unknown operator ${expr.op}`);
+  const left = inferExpr(
+    expr.left,
+    env,
+    typeEnv,
+    adts,
+    types,
+    warnings,
+    diagnostics,
+    provenance,
+    ffiObligations,
+  );
+  const right = inferExpr(
+    expr.right,
+    env,
+    typeEnv,
+    adts,
+    types,
+    warnings,
+    diagnostics,
+    provenance,
+    ffiObligations,
+  );
+  constrain(
+    instantiate(op),
+    fn([tuple([left, right])], result),
+    rememberProvenance(provenance, {
+      message: `operator ${expr.op}: ${quoteType(instantiate(op))}`,
+      node: expr.node,
+      span: expr.node?.span,
+    }),
+  );
+  if (expr.op === "==" || expr.op === "!=") assertEqualityType(left, typeEnv, adts);
+  return result;
+}
+
+export function inferParam(
+  param: Param,
+  env: Env,
+  typeEnv: TypeEnv,
+  adts: Map<number, TypeDeclInfo>,
+  vars: TypeVarScope,
+  binders: Set<string>,
+): Ty {
+  const expected = param.annotation ? typeFromAst(param.annotation, typeEnv, vars) : fresh();
+  return inferPattern(param.pattern, expected, env, typeEnv, adts, binders);
+}
+
+export function inferPipe(
+  expr: Extract<Expr, { kind: "Pipe" }>,
+  env: Env,
+  typeEnv: TypeEnv,
+  adts: Map<number, TypeDeclInfo>,
+  types: Map<Expr, Ty>,
+  warnings: string[],
+  diagnostics: FrontendDiagnostic[],
+  provenance: TypeProvenance,
+  ffiObligations: FfiObligation[],
+): Ty {
+  const leftType = inferExpr(
+    expr.left,
+    env,
+    typeEnv,
+    adts,
+    types,
+    warnings,
+    diagnostics,
+    provenance,
+    ffiObligations,
+  );
+  const right = expr.right;
+
+  if (right.kind === "Call") {
+    const calleeType = inferExpr(
+      right.callee,
+      env,
+      typeEnv,
+      adts,
+      types,
+      warnings,
+      diagnostics,
+      provenance,
+      ffiObligations,
+    );
+    const argTypes = right.args.map((a) =>
+      inferExpr(a, env, typeEnv, adts, types, warnings, diagnostics, provenance, ffiObligations)
+    );
+    const allArgs = [leftType, ...argTypes];
+    return constrainPipe(expr, calleeType, callArg(allArgs), provenance);
+  }
+
+  const calleeType = inferExpr(
+    right,
+    env,
+    typeEnv,
+    adts,
+    types,
+    warnings,
+    diagnostics,
+    provenance,
+    ffiObligations,
+  );
+  return constrainPipe(expr, calleeType, leftType, provenance);
+}
+
+function constrainPipe(
+  expr: Extract<Expr, { kind: "Pipe" }>,
+  calleeType: Ty,
+  argType: Ty,
+  provenance: TypeProvenance,
+): Ty {
+  const result = fresh();
+  constrainAt(
+    calleeType,
+    fn([argType], result),
+    expr,
+    () =>
+      `type mismatch expected ${quoteType(fn([argType], result))}, got ${quoteType(calleeType)}`,
+    [],
+    provenance,
+    {
+      message: "pipe argument",
+      node: expr.node,
+      span: expr.node?.span,
+      primary: true,
+      expectedCallTupleShape: callArity(argType),
+      actualCallTupleShape: callArity(argType),
+      callDepth: 0,
+    },
+  );
+  return result;
+}
