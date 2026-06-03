@@ -202,6 +202,26 @@ Deno.test("FFI elaboration rewrites annotated Js.Object property reads", async (
   );
 });
 
+Deno.test("FFI elaboration rewrites annotated primitive receiver methods", async () => {
+  const module = await parse(`
+    let hex = (byte: Number) => {
+      byte.toString(Some(16))
+    };
+  `);
+
+  const ffi = prepareFfiElaboration(module);
+  const receiverImport = ffi.module.decls.find((decl) =>
+    decl.kind === "JsImportDecl" && decl.target.kind === "JsReceiver"
+  );
+
+  assertEquals(
+    receiverImport?.kind === "JsImportDecl" && receiverImport.target.kind === "JsReceiver"
+      ? receiverImport.target.path
+      : undefined,
+    ["toString"],
+  );
+});
+
 Deno.test("FFI elaboration preserves type-only JS refs for property reads", async () => {
   const module = await parse(`
     from js.global import type { Request };

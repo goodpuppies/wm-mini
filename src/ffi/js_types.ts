@@ -36,6 +36,7 @@ export type JsTypeRef = {
   key: string;
   source: string;
   expr: string;
+  type?: TypeExpr;
 };
 
 export type JsCallbackParamRefs = {
@@ -50,6 +51,7 @@ export type JsCallArgHint =
 
 const memberCache = new Map<string, JsMemberType | undefined>();
 const namespaceCache = new Map<string, JsMemberType[]>();
+const refTypeCache = new Map<string, TypeExpr | undefined>();
 
 export function jsGlobalMembers(path: string): JsMemberType[] {
   const target = jsGlobalSource(path);
@@ -113,6 +115,17 @@ export function jsGlobalValueRef(name: string): JsTypeRef {
   };
 }
 
+export function jsPrimitiveValueRef(name: "String" | "Number" | "Bool"): JsTypeRef {
+  const tsType = name === "String" ? "string" : name === "Number" ? "number" : "boolean";
+  const suffix = `primitive_${tsType}`;
+  return {
+    key: `primitive:${tsType}`,
+    source: `declare const __wm_ref_${suffix}: ${tsType};`,
+    expr: `__wm_ref_${suffix}`,
+    type: { kind: "TName", name, args: [] },
+  };
+}
+
 export function jsGlobalTypeRef(name: string): JsTypeRef {
   return typeRefFromSource(`global-type:${name}`, "", name);
 }
@@ -159,6 +172,7 @@ export function jsConstructMember(ref: JsTypeRef): JsMemberType | undefined {
               `${key}:return:${index}`,
               ref.source,
               ref.expr,
+              ref,
               signature,
             ),
           }))
@@ -217,6 +231,28 @@ export function jsRefMember(ref: JsTypeRef, path: string[]): JsMemberType | unde
   return reflected;
 }
 
+export function jsRefTypeExpr(ref: JsTypeRef): TypeExpr | undefined {
+  if (ref.type) return ref.type;
+  const key = `${ref.key}:type`;
+  if (refTypeCache.has(key)) return refTypeCache.get(key);
+  const reflected = reflectSource(
+    key,
+    ref.source,
+    (checker, sourceFile) => {
+      const value = findVariable(sourceFile, ref.expr)?.initializer ??
+        findDeclaredValue(sourceFile, ref.expr);
+      if (!value) return undefined;
+      const symbol = checker.getSymbolAtLocation(value);
+      const type = symbol
+        ? checker.getTypeOfSymbolAtLocation(symbol, value)
+        : checker.getTypeAtLocation(value);
+      return typeExprFromTsType(checker, type, "param");
+    },
+  );
+  refTypeCache.set(key, reflected);
+  return reflected;
+}
+
 export function jsRefCallMember(
   ref: JsTypeRef,
   path: string[],
@@ -255,7 +291,13 @@ export function jsRefCallMember(
       const signature = checker.getResolvedSignature(call);
       if (!signature) return undefined;
       const type = functionTypeFromCall(checker, call, signature, args);
-      const callbackParamRefs = callbackParamRefsFromCall(checker, call, args, typeRefFromTsType);
+      const callbackParamRefs = callbackParamRefsFromCall(
+        checker,
+        call,
+        args,
+        typeRefFromTsType,
+        key,
+      );
       return {
         name: path.at(-1)!,
         type,
@@ -364,6 +406,7 @@ function typeRefFromTsType(
       checker.typeToString(type)
     };\ndeclare const ${expr}: ${typeName};`,
     expr,
+    type: typeExprFromTsType(checker, type, "param"),
   };
 }
 
@@ -382,8 +425,11 @@ function constructReturnRef(
   key: string,
   source: string,
   ctorExpr: string,
+  ref: JsTypeRef,
   signature: ts.Signature,
 ): JsTypeRef {
+  const canonical = canonicalConstructorTypeRef(ref);
+  if (canonical) return canonical;
   const declaration = signature.getDeclaration();
   const params =
     declaration?.parameters.map((param, index) =>
@@ -394,6 +440,14 @@ function constructReturnRef(
       param.dotDotDotToken ? `...__wm_arg_${index}` : `__wm_arg_${index}`
     ).join(", ") ?? "";
   return returnTypeRef(key, source, `ReturnType<() => InstanceType<typeof ${ctorExpr}>>`);
+}
+
+function canonicalConstructorTypeRef(ref: JsTypeRef): JsTypeRef | undefined {
+  if (ref.key.startsWith("global-value:")) {
+    const name = ref.key.slice("global-value:".length);
+    return jsGlobalTypeRef(name);
+  }
+  return undefined;
 }
 
 function propertyPath(base: string, path: string[]): string {

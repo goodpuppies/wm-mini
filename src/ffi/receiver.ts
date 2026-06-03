@@ -1,8 +1,16 @@
 import type { Decl, Expr, Param, Pattern, TypeExpr } from "../ast.ts";
-import { type JsCallArgHint, type JsMemberType, jsRefMember, type JsTypeRef } from "./js_types.ts";
+import {
+  type JsCallArgHint,
+  type JsMemberType,
+  jsRefMember,
+  jsPrimitiveValueRef,
+  jsRefTypeExpr,
+  type JsTypeRef,
+} from "./js_types.ts";
 import {
   addVariants,
   callArgHint,
+  callHintKey,
   type FfiBinding,
   type FfiVariant,
   fn,
@@ -42,16 +50,19 @@ export function reflectedReceiverCallCandidate(
   const ref = refs.get(baseName);
   if (!ref) return undefined;
   const path = parts.slice(1);
-  const member = jsRefCallMember(ref, path, args.map(callArgHint)) ?? jsRefMember(ref, path);
+  const callMember = jsRefCallMember(ref, path, args.map(callArgHint));
+  const member = callMember ?? jsRefMember(ref, path);
   if (!member) return undefined;
-  const surfaceName = `__receiver.${ref.key}.${path.join(".")}`;
+  const suffix = callMember ? `(${callHintKey(args)})` : "";
+  const surfaceName = `__receiver.${ref.key}.${path.join(".")}${suffix}`;
+  const receiverType = primitiveReceiverType(jsRefTypeExpr(ref));
   addVariants(
     bindings,
     surfaceName,
     path.at(-1)!,
     { kind: "JsReceiver", path },
     memberVariants(member).map((variant) => ({
-      type: prependReceiver(variant.type),
+      type: prependReceiver(variant.type, receiverType),
       resultRef: variant.resultRef,
       callbackParamRefs: variant.callbackParamRefs?.map((item) => ({
         argIndex: item.argIndex + 1,
@@ -87,13 +98,14 @@ export function reflectedReceiverProperty(
   const member = jsRefMember(ref, path);
   if (!member) return undefined;
   const surfaceName = `__receiver.${ref.key}.${path.join(".")}`;
+  const reflectedReceiverType = receiverType ?? primitiveReceiverType(jsRefTypeExpr(ref));
   addVariants(
     bindings,
     surfaceName,
     path.at(-1)!,
     { kind: "JsReceiver", path },
     memberVariants(member).map((variant) => ({
-      type: prependReceiver(variant.type, receiverType),
+      type: prependReceiver(variant.type, reflectedReceiverType),
       resultRef: variant.resultRef,
       callbackParamRefs: variant.callbackParamRefs?.map((item) => ({
         argIndex: item.argIndex + 1,
@@ -168,12 +180,58 @@ export function objectReceiverProperty(
 export function objectReceiverCall(
   exprName: string,
   args: Expr[],
+  bindings: Map<string, FfiBinding>,
+  selected: Set<string>,
   objectAccess: Map<string, ObjectAccess>,
-): Expr | undefined {
+  jsRefCallMember: (
+    ref: JsTypeRef,
+    path: string[],
+    args: JsCallArgHint[],
+  ) => JsMemberType | undefined,
+): Expr | ReflectedReceiverCall | undefined {
   const parts = exprName.split(".");
   if (parts.length < 2) return undefined;
   const baseName = parts[0];
   const access = objectAccess.get(baseName);
+  if (access?.kind === "ref") {
+    return reflectedReceiverCallCandidate(
+      exprName,
+      args,
+      bindings,
+      selected,
+      new Map([[baseName, access.ref]]),
+      jsRefCallMember,
+    );
+  }
+  if (access?.kind === "dynamic") {
+    const path = parts.slice(1);
+    const surfaceName = `__dynamic.${path.join(".")}(${callHintKey(args)})`;
+    addVariants(
+      bindings,
+      surfaceName,
+      path.at(-1)!,
+      { kind: "JsReceiver", path },
+      [{
+        type: fn(
+          [
+            name("Js.Object"),
+            ...args.map((_, index) => ({ kind: "TVar" as const, name: `a${index}` })),
+          ],
+          { kind: "TVar", name: "b" },
+        ),
+      }],
+      true,
+    );
+    const allArgs = [{ kind: "Var" as const, name: baseName }, ...args];
+    const variant = selectVariant(bindings.get(surfaceName)?.variants ?? [], allArgs);
+    if (!variant) return undefined;
+    selected.add(variant.internalName);
+    return {
+      callee: { kind: "Var", name: variant.internalName },
+      args: allArgs,
+      variant,
+    };
+  }
   if (access?.kind !== "unresolved") return undefined;
   return {
     kind: "FfiCall",
@@ -213,12 +271,25 @@ function objectAccessForType(
 ): ObjectAccess | undefined {
   if (isJsObjectType(type)) return { kind: "dynamic" };
   if (type?.kind !== "TName" || type.args.length !== 0) return undefined;
+  if (type.name === "String" || type.name === "Number" || type.name === "Bool") {
+    return { kind: "ref", ref: jsPrimitiveValueRef(type.name), receiverType: type };
+  }
   const ref = importedTypeRefs.get(type.name);
   return ref ? { kind: "ref", ref, receiverType: type } : undefined;
 }
 
 function isJsObjectType(type: TypeExpr | undefined): boolean {
   return type?.kind === "TName" && type.name === "Js.Object" && type.args.length === 0;
+}
+
+function primitiveReceiverType(type: TypeExpr | undefined): TypeExpr | undefined {
+  if (
+    type?.kind === "TName" && type.args.length === 0 &&
+    (type.name === "String" || type.name === "Number" || type.name === "Bool")
+  ) {
+    return type;
+  }
+  return undefined;
 }
 
 export function rememberLetRefs(

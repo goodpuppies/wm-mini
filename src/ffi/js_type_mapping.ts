@@ -229,11 +229,12 @@ export function callbackParamRefsFromCall(
   call: ts.CallExpression,
   args: JsCallArgHint[],
   typeRefFromTsType: (key: string, checker: ts.TypeChecker, type: ts.Type) => JsTypeRef,
+  keyPrefix = `call:${call.getStart()}`,
 ): JsCallbackParamRefs[] | undefined {
   const refs = call.arguments.map((arg, argIndex) => {
     if (args[argIndex]?.kind !== "function" || !ts.isArrowFunction(arg)) return undefined;
     const params = arg.parameters.map((param, callbackParamIndex) => {
-      const key = `call:${call.getStart()}:callback:${argIndex}:${callbackParamIndex}`;
+      const key = `${keyPrefix}:callback:${argIndex}:${callbackParamIndex}`;
       return typeRefFromTsType(key, checker, checker.getTypeAtLocation(param));
     });
     return params.length ? { argIndex, params } : undefined;

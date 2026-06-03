@@ -16,6 +16,7 @@ type RewriteDecl = (
   resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
+  rewriteExpr: RewriteExpr,
 ) => Decl;
 
 type RewriteExpr = (
@@ -52,6 +53,7 @@ export function rewriteBlock(
         localResultRefs,
         localObjectAccess,
         importedTypeRefs,
+        rewriteExpr,
       )
       : rewriteExpr(
         item,

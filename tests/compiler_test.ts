@@ -56,6 +56,15 @@ Deno.test("compiled Panic emits runtime Panic failure", async () => {
   assertStringIncludes(js, '__wm_fail("Panic", "boom")');
 });
 
+Deno.test("compiled manual root JS imports target global member names", async () => {
+  const js = await compile(`
+    from js.global import unsafe { isFinite: (Number) => Bool };
+    let ok = isFinite(1);
+  `);
+
+  assertStringIncludes(js, '__wm_js_member("isFinite")');
+});
+
 Deno.test("reports inferred principal type shapes for core bindings", async () => {
   const result = await checkSource(`
     let id = (x) => { x };
@@ -279,6 +288,32 @@ Deno.test("reflects literal JS event callback parameter types", async () => {
   `);
 
   expectBinding(result.env, "closed", { type: "Result<Js.Object, Js.Error>", vars: 0 });
+});
+
+Deno.test("keeps reflected receiver event callback refs distinct", async () => {
+  const result = await checkSource(`
+    from js.module("node:fs") import { createReadStream };
+    let stream = createReadStream("data.txt");
+    let hooked = match(stream) {
+      Ok(s) => {
+        s.on("data", (chunk) => {
+          chunk.length;
+        });
+        s.on("error", (err) => {
+          match(err.message) {
+            Ok(message) => { message == "" },
+            Err(_) => { false },
+          };
+        });
+        s.on("close", () => {
+          void
+        })
+      },
+      Err(_) => { stream },
+    };
+  `);
+
+  expectBinding(result.env, "hooked", { type: "Result<Js.Object, Js.Error>", vars: 0 });
 });
 
 Deno.test("reflects global value constructors through new member", async () => {
@@ -907,4 +942,23 @@ Deno.test("compiled lambda parameter mismatch raises Match", async () => {
   const source = "let first = (x, _) => { x };";
   const js = await compile(source);
   assertStringIncludes(js, '__wm_fail("Match", "pattern match failure in function")');
+});
+
+Deno.test("reflected constructors return imported nominal foreign types", async () => {
+  const result = await checkSource(`
+    from js.global import unsafe { Request };
+    from js.global import type { Request };
+
+    let request: Request = Request.new("https://example.test/", JSON{
+      method: "POST"
+    });
+
+    let contentType = request.headers.get("content-type");
+  `);
+
+  expectBinding(result.env, "request", { type: "Request", vars: 0 });
+  expectBinding(result.env, "contentType", {
+    type: "Result<Option<String>, Js.Error>",
+    vars: 0,
+  });
 });

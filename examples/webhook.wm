@@ -1,0 +1,218 @@
+from js.global import unsafe {
+  AbortController,
+  Array,
+  Response,
+  TextEncoder,
+  URL,
+  Uint8Array,
+};
+from js.global("Array") import unsafe { from as arrayFrom };
+from js.global import unsafe {
+  fetch: (String, Js.Value) => Js.Object,
+  setTimeout: ((Void) => Void, Number) => Js.Value,
+};
+from js.global import type { Request };
+from js.global("crypto.subtle") import unsafe {
+  importKey: (String, Js.Value, Js.Value, Bool, Js.Value) => Js.Object,
+  sign,
+} as subtle;
+from js.global("Deno") import unsafe { serve };
+from js.global("JSON") import unsafe {
+  parse: (String) => Js.Object,
+  stringify: (Js.Value) => String,
+} as JSON;
+from js.global("console") import unsafe { error, log };
+
+let githubSecret = "my-super-secret-key";
+let discordWebhook = "http://localhost:8080/mock-discord";
+
+let try = (result) => {
+  match(result) {
+    Ok(value) => { value },
+    Err(_) => { Panic("JS FFI call failed") },
+  }
+};
+
+let okResponse = (body) => {
+  Response.new(body, JSON{
+    status: 200,
+    headers: JSON{ "Content-Type": "application/json" },
+  })
+};
+
+let response = (body, status: Number) => {
+  Response.new(body, JSON{ status: status })
+};
+
+let hexByte = (byte: Number, index, array) => {
+  try(byte.toString(Some(16)))
+};
+
+let hexFromBuffer = (buffer) => {
+  let bytes = Uint8Array.new(buffer);
+  let array: Js.Object = arrayFrom(bytes);
+  let hexParts: Js.Object = try(array.map(hexByte));
+  try(hexParts.join(""))
+};
+
+let encodeText = (encoder, text) => {
+  try(encoder.encode(Some(text)))
+};
+
+let verifyGithubSignature = (signature, bodyText) => {
+  match(signature) {
+    Some(sig) => {
+      let encoder = TextEncoder.new();
+      let secretBytes = encodeText(encoder, githubSecret);
+      let bodyBytes = encodeText(encoder, bodyText);
+      let keyPromise: Js.Object = subtle.importKey(
+        "raw",
+        secretBytes,
+        JSON{ name: "HMAC", hash: "SHA-256" },
+        false,
+        JSON["sign", "verify"],
+      );
+
+      keyPromise.then((key) => {
+        let signaturePromise = subtle.sign("HMAC", key, bodyBytes);
+        signaturePromise.then((expectedBuffer) => {
+          let expectedHex = hexFromBuffer(expectedBuffer);
+          sig == "sha256=" ++ expectedHex;
+        });
+      });
+      true
+    },
+    None => {
+      false
+    },
+  }
+};
+
+let sendDiscordMessage = (content: String) => {
+  let sent: Js.Object = fetch(discordWebhook, JSON{
+    method: "POST",
+    headers: JSON{ "Content-Type": "application/json" },
+    body: JSON.stringify(JSON{ content: content }),
+  });
+  try(sent.catch((err) => {
+    error("Discord error:", err);
+  }))
+};
+
+let handleMockDiscord = (req: Request) => {
+  let bodyPromise: Js.Object = try(req.json());
+  try(bodyPromise.then((body: Js.Object) => {
+    let content = try(body.content);
+    log("\n[Discord Mock] Received message:\n", content, "\n");
+    response("OK", 200)
+  }))
+};
+
+let handlePushPayload = (req, payload: Js.Object) => {
+  let repoName = try(payload.repository.full_name);
+  let pusherName = try(payload.pusher.name);
+  let commits: Js.Object = try(payload.commits);
+  let commitCount = try(commits.length);
+
+  if (commitCount > 0) {
+    sendDiscordMessage(
+      pusherName ++ " pushed commits to " ++ repoName,
+    );
+  } else {
+    void
+  }
+};
+
+let handleRequest = (req: Request, info: Js.Object) => {
+  let method = try(req.method);
+  let urlText = try(req.url);
+  let url = URL.new(urlText);
+  let path = try(url.pathname);
+
+  if (path == "/mock-discord") {
+    handleMockDiscord(req)
+  } else {
+    if (method != "POST") {
+      response("Method Not Allowed", 405)
+    } else {
+      let textPromise: Js.Object = try(req.text());
+      try(textPromise.then((bodyText: String) => {
+        let signature = try(req.headers.get("x-hub-signature-256"));
+        let authorized = verifyGithubSignature(signature, bodyText);
+        if (!authorized) {
+          error("[Server] Unauthorized request!");
+          response("Unauthorized", 401)
+        } else {
+          let payload = JSON.parse(bodyText);
+          let eventName = try(req.headers.get("x-github-event"));
+          match(eventName) {
+            Some("push") => {
+              handlePushPayload(req, payload);
+            },
+            _ => {
+              void
+            },
+          };
+          okResponse(JSON.stringify(JSON{ received: true }))
+        }
+      }))
+    }
+  }
+};
+
+let runSimulation = () => {
+  let ac = AbortController.new();
+  let server = serve(JSON{ port: 8080, signal: try(ac.signal) }, handleRequest);
+  log("Server started on http://localhost:8080");
+
+  let dummyPayload = JSON{
+    repository: JSON{ full_name: "my-org/my-compiler" },
+    pusher: JSON{ name: "alice" },
+    commits: JSON[
+      JSON{ id: "abcdef123456", message: "Initial commit" },
+      JSON{ id: "9876543210ab", message: "Fix JS reflection type inference" },
+    ],
+  };
+  let payloadText = JSON.stringify(dummyPayload);
+  let encoder = TextEncoder.new();
+  let keyPromise: Js.Object = subtle.importKey(
+    "raw",
+    encodeText(encoder, githubSecret),
+    JSON{ name: "HMAC", hash: "SHA-256" },
+    false,
+    JSON["sign"],
+  );
+
+  keyPromise.then((key) => {
+    let signaturePromise = subtle.sign("HMAC", key, encodeText(encoder, payloadText));
+    try(signaturePromise.then((sigBuffer) => {
+      let sigHex = hexFromBuffer(sigBuffer);
+      log("Simulating incoming GitHub Webhook...");
+      let requestPromise: Js.Object = fetch("http://localhost:8080", JSON{
+        method: "POST",
+        headers: JSON{
+          "x-github-event": "push",
+          "x-hub-signature-256": "sha256=" ++ sigHex,
+          "Content-Type": "application/json",
+        },
+        body: payloadText,
+      });
+      try(requestPromise.then((res: Js.Object) => {
+        let responsePromise: Js.Object = try(res.json());
+        try(responsePromise.then((responseBody: Js.Object) => {
+          log("[Simulation] Server responded with:", responseBody);
+          setTimeout(() => {
+            log("Shutting down server...");
+            ac.abort();
+          }, 100);
+        }));
+      }));
+      void
+    }));
+    void
+  })
+};
+
+let main = () => {
+  runSimulation()
+};

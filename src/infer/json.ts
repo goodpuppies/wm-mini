@@ -12,7 +12,7 @@ export function jsonValueTy(typeEnv: TypeEnv): Ty {
 export function assertJsonCompatible(type: Ty, typeEnv: TypeEnv, expr: Expr) {
   const t = prune(type);
   if (t.tag === "prim" && ["Number", "String", "Bool", "Void"].includes(t.name)) return;
-  if (isJsValueTy(t, typeEnv)) return;
+  if (isJsValueTy(t, typeEnv) || isJsObjectLikeTy(t, typeEnv)) return;
   if (t.tag === "var") {
     constrain(t, jsonValueTy(typeEnv));
     return;
@@ -23,4 +23,10 @@ export function assertJsonCompatible(type: Ty, typeEnv: TypeEnv, expr: Expr) {
 function isJsValueTy(type: Ty, typeEnv: TypeEnv): boolean {
   const jsValue = typeEnv.get("Js.Value");
   return !!jsValue && type.tag === "named" && type.id === jsValue.id;
+}
+
+function isJsObjectLikeTy(type: Ty, typeEnv: TypeEnv): boolean {
+  const jsObject = typeEnv.get("Js.Object");
+  return type.tag === "named" &&
+    (type.id === jsObject?.id || Boolean(type.foreign || typeEnv.get(type.name)?.foreign));
 }

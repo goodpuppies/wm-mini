@@ -295,6 +295,7 @@ function jsTargetRef(target: Extract<CoreDecl, { kind: "CoreJsImport" }>["target
 
 function jsMemberRef(target: JsTargetRef, member: string): string {
   if (target.kind === "global") {
+    if (target.path.length === 0) return `__wm_js_member(${member})`;
     if (member === JSON.stringify(target.path)) {
       return `__wm_js_member(${JSON.stringify(target.path)})`;
     }

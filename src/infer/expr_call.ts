@@ -118,7 +118,10 @@ function jsImportActualArg(expected: Ty, actual: Ty, typeEnv: TypeEnv): Ty {
     if (!jsObject) throw new Error("unknown type Js.Object");
     return named(jsObject);
   }
-  if (isJsValueType(expectedType, typeEnv) && isJsObjectLikeType(actualType, typeEnv)) {
+  if (
+    isJsValueType(expectedType, typeEnv) &&
+    (isJsObjectLikeType(actualType, typeEnv) || isJsPrimitiveType(actualType))
+  ) {
     const jsValue = typeEnv.get("Js.Value");
     if (!jsValue) throw new Error("unknown type Js.Value");
     return named(jsValue);
@@ -169,6 +172,12 @@ function isJsObjectType(type: Ty, typeEnv: TypeEnv): boolean {
 function isJsValueType(type: Ty, typeEnv: TypeEnv): boolean {
   const t = prune(type);
   return t.tag === "named" && t.id === typeEnv.get("Js.Value")?.id;
+}
+
+function isJsPrimitiveType(type: Ty): boolean {
+  const t = prune(type);
+  return t.tag === "prim" &&
+    (t.name === "String" || t.name === "Number" || t.name === "Bool" || t.name === "Void");
 }
 
 function assertPrintable(type: Ty) {

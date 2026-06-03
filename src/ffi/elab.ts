@@ -13,6 +13,7 @@ import {
   rememberUnannotatedParams,
 } from "./receiver.ts";
 import { rewriteBlock, rewriteMatchArms } from "./rewrite_blocks.ts";
+import { rewriteDeclCalls } from "./rewrite_decl.ts";
 import {
   type FfiBinding,
   type FfiElaboration,
@@ -28,7 +29,11 @@ export function prepareFfiElaboration(module: Module): FfiElaboration {
   const importedRefs = new Map<string, JsTypeRef>();
   const importedTypeRefs = new Map<string, JsTypeRef>();
   for (const decl of module.decls) {
-    if (decl.kind !== "JsImportDecl") continue;
+    if (decl.kind !== "JsImportDecl" || !decl.typeOnly) continue;
+    collectFfiDecl(bindings, importedRefs, importedTypeRefs, decl);
+  }
+  for (const decl of module.decls) {
+    if (decl.kind !== "JsImportDecl" || decl.typeOnly) continue;
     collectFfiDecl(bindings, importedRefs, importedTypeRefs, decl);
   }
   const selected = new Set<string>();
@@ -49,6 +54,7 @@ export function prepareFfiElaboration(module: Module): FfiElaboration {
       resultRefs,
       objectAccess,
       importedTypeRefs,
+      rewriteExprCalls,
     );
     rememberLetRefs(rewritten, bindings, refs, resultRefs, objectAccess, importedTypeRefs);
     rewrittenDecls.push(rewritten);
@@ -61,33 +67,6 @@ export function prepareFfiElaboration(module: Module): FfiElaboration {
     ),
   ];
   return { module: { ...module, decls }, bindings, foreignTypeRefs: importedTypeRefs, selected };
-}
-
-function rewriteDeclCalls(
-  decl: Decl,
-  bindings: Map<string, FfiBinding>,
-  selected: Set<string>,
-  refs: Map<string, JsTypeRef>,
-  resultRefs: Map<string, JsTypeRef>,
-  objectAccess: Map<string, ObjectAccess>,
-  importedTypeRefs: Map<string, JsTypeRef>,
-): Decl {
-  if (decl.kind !== "LetDecl") return decl;
-  return {
-    ...decl,
-    bindings: decl.bindings.map((binding) => ({
-      ...binding,
-      value: rewriteExprCalls(
-        binding.value,
-        bindings,
-        selected,
-        refs,
-        resultRefs,
-        objectAccess,
-        importedTypeRefs,
-      ),
-    })),
-  };
 }
 
 export function rewriteExprCalls(
@@ -233,20 +212,47 @@ export function rewriteExprCalls(
         }
         const objectReceiver = objectReceiverCall(
           expr.callee.name,
-          expr.args.map((arg) =>
-            rewriteExprCalls(
-              arg,
-              bindings,
-              selected,
-              refs,
-              resultRefs,
-              objectAccess,
-              importedTypeRefs,
-            )
-          ),
+          expr.args,
+          bindings,
+          selected,
           objectAccess,
+          jsRefCallMember,
         );
-        if (objectReceiver) return objectReceiver;
+        if (objectReceiver) {
+          if ("variant" in objectReceiver) {
+            return {
+              ...expr,
+              callee: objectReceiver.callee,
+              args: rewriteArgsWithVariant(
+                objectReceiver.args,
+                objectReceiver.variant,
+                bindings,
+                selected,
+                refs,
+                resultRefs,
+                objectAccess,
+                importedTypeRefs,
+              ),
+            };
+          }
+          if (objectReceiver.kind === "FfiCall") {
+            return {
+              ...objectReceiver,
+              args: objectReceiver.args.map((arg) =>
+                rewriteExprCalls(
+                  arg,
+                  bindings,
+                  selected,
+                  refs,
+                  resultRefs,
+                  objectAccess,
+                  importedTypeRefs,
+                )
+              ),
+            };
+          }
+          return objectReceiver;
+        }
       }
       const args = expr.args.map((arg) =>
         rewriteExprCalls(

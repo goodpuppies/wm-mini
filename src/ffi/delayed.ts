@@ -5,6 +5,7 @@ import { prune, show, type Ty } from "../types.ts";
 import {
   addVariants,
   callArgHint,
+  callHintKey,
   type FfiBinding,
   type FfiElaboration,
   type FfiVariant,
@@ -248,8 +249,8 @@ function resolveDelayedFfiCall(
   const foreignTypeRefs = foreignTypeRefLookup(ffi.foreignTypeRefs, options.foreignTypeRefs);
   const foreign = receiverType ? foreignReceiver(receiverType, foreignTypeRefs) : undefined;
   if (foreign) {
-    const member = jsRefCallMember(foreign.ref, expr.path, expr.args.map(callArgHint)) ??
-      jsRefMember(foreign.ref, expr.path);
+    const callMember = jsRefCallMember(foreign.ref, expr.path, expr.args.map(callArgHint));
+    const member = callMember ?? jsRefMember(foreign.ref, expr.path);
     if (member) {
       return materializeReceiverCall(
         receiver,
@@ -257,7 +258,9 @@ function resolveDelayedFfiCall(
         expr.args,
         foreign.type,
         member,
-        `__receiver.${foreign.ref.key}.${expr.path.join(".")}`,
+        `__receiver.${foreign.ref.key}.${expr.path.join(".")}${
+          callMember ? `(${callHintKey(expr.args)})` : ""
+        }`,
         ffi,
         result,
         selected,

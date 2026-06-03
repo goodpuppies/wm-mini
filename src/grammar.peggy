@@ -85,7 +85,7 @@ JsImportClauseBody
 
 JsImportSpecList = first:JsImportSpec rest:(_ "," _ s:JsImportSpec { return s; })* _ ","? { return [first, ...rest]; }
 JsImportSpec
-  = name:Name alias:(_ "as" _ a:Name { return a; })? type:(_ ":" _ t:TypeExpr { return t; })?
+  = name:MemberName alias:(_ "as" _ a:Name { return a; })? type:(_ ":" _ t:TypeExpr { return t; })?
     { return at({ name, alias, type }, location()); }
 
 LetDecl
@@ -349,7 +349,8 @@ Void = "void" !IdentPart { return at({ kind: "Void" }, location()); }
 Identifier = !Keyword name:$([a-z_] IdentPart*) { return name; }
 Constructor = !Keyword name:$([A-Z] IdentPart*) { return name; }
 Name = Constructor / Identifier
-LongName = first:Name rest:("." n:Name { return n; })* { return [first, ...rest].join("."); }
+MemberName = name:$([a-zA-Z_] IdentPart*) { return name; }
+LongName = first:Name rest:("." n:MemberName { return n; })* { return [first, ...rest].join("."); }
 LongConstructor = first:Constructor rest:("." n:Constructor { return n; })* { return [first, ...rest].join("."); }
 IdentPart = [a-zA-Z0-9_]
 Keyword = ("from" / "import" / "as" / "export" / "let" / "rec" / "and" / "type" / "record" / "if" / "else" / "match" / "true" / "false" / "void") !IdentPart

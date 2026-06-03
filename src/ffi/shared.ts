@@ -109,6 +109,15 @@ export function callArgHint(expr: Expr): JsCallArgHint {
   return { kind: "unknown" };
 }
 
+export function callHintKey(args: Expr[]): string {
+  return args.map((arg) => {
+    const hint = callArgHint(arg);
+    if (hint.kind === "string") return JSON.stringify(hint.value);
+    if (hint.kind === "function") return `fn/${hint.arity}`;
+    return "?";
+  }).join(",");
+}
+
 export function prependReceiver(
   type: TypeExpr,
   receiverType: TypeExpr = name("Js.Object"),

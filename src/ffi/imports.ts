@@ -1,4 +1,4 @@
-import type { Decl, JsImportSpec, JsTarget } from "../ast.ts";
+import type { Decl, JsImportSpec, JsTarget, TypeExpr } from "../ast.ts";
 import { diagnosticError } from "../diagnostics.ts";
 import {
   jsConstructMember,
@@ -52,7 +52,7 @@ export function collectFfiDecl(
           `${surfaceName}.new`,
           "new",
           { kind: "JsConstructor", path: spec.name },
-          memberVariants(construct),
+          specializeForeignResultVariants(memberVariants(construct), importedTypeRefs),
           !decl.clause.unsafe,
           spec.node,
         );
@@ -76,6 +76,30 @@ export function collectFfiDecl(
       spec.node,
     );
   }
+}
+
+function specializeForeignResultVariants(
+  variants: ReturnType<typeof memberVariants>,
+  importedTypeRefs: Map<string, JsTypeRef>,
+): ReturnType<typeof memberVariants> {
+  return variants.map((variant) => {
+    const resultType = variant.resultRef && foreignTypeForRef(variant.resultRef, importedTypeRefs);
+    return resultType ? { ...variant, type: replaceResultType(variant.type, resultType) } : variant;
+  });
+}
+
+function foreignTypeForRef(
+  ref: JsTypeRef,
+  importedTypeRefs: Map<string, JsTypeRef>,
+): TypeExpr | undefined {
+  for (const [name, imported] of importedTypeRefs) {
+    if (imported.key === ref.key) return { kind: "TName", name, args: [] };
+  }
+  return undefined;
+}
+
+function replaceResultType(type: TypeExpr, result: TypeExpr): TypeExpr {
+  return type.kind === "TFn" ? { ...type, result } : result;
 }
 
 function collectFfiTypeDecl(
