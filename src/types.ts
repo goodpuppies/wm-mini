@@ -347,6 +347,10 @@ export function baseTypeEnv(): TypeEnv {
       ...freshTypeInfo("Js.Array", 1),
       basis: true,
     });
+    basisTypeEnvCache.set("Js.Promise", {
+      ...freshTypeInfo("Js.Promise", 1),
+      basis: true,
+    });
     for (const type of basisTypes) {
       basisTypeEnvCache.set(type.name, {
         ...freshTypeInfo(type.name, type.params.length),

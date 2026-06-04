@@ -9,6 +9,7 @@ from js.global import unsafe {
   Uint8Array,
 };
 from js.global("Array") import unsafe { from as arrayFrom };
+from js.global("Promise") import unsafe { resolve as promiseResolve };
 from js.global import type { Request };
 from js.global("crypto.subtle") import unsafe {
   importKey,
@@ -31,6 +32,10 @@ record PushPayload = {
   repository: Repository,
   pusher: Pusher,
   commits: Js.Array<Commit>,
+};
+
+record MockDiscordPayload = {
+  content: String,
 };
 
 let try = (result) => {
@@ -99,10 +104,12 @@ let sendDiscordMessage = (content) => {
 let handleMockDiscord = (req) => {
   let bodyPromise = req :> .json() :> try;
   bodyPromise :> .then((body) => {
-    let content = body :> .content :> try;
+    let payload: MockDiscordPayload = body :> Json.assert :> try;
+    let content = payload.content;
     log("\n[Discord Mock] Received message:\n", content, "\n");
-    response("OK", 200)
-  }) :> try
+    void
+  }) :> try;
+  promiseResolve(response("OK", 200))
 };
 
 let formatCommit = (commit, index, array) => {
@@ -141,7 +148,7 @@ let handleRequest = (req, info) => {
     handleMockDiscord(req)
   } else {
     if (method != "POST") {
-      response("Method Not Allowed", 405)
+      promiseResolve(response("Method Not Allowed", 405))
     } else {
       let textPromise = req :> .text() :> try;
       textPromise :> .then((bodyText) => {
@@ -152,7 +159,7 @@ let handleRequest = (req, info) => {
             authorizedPromise :> .then((authorized) => {
               if (!authorized) {
                 error("[Server] Unauthorized request!");
-                response("Unauthorized", 401)
+                promiseResolve(response("Unauthorized", 401))
               } else {
                 let payload: PushPayload = JSON.parse(bodyText) :> Json.assert :> try;
                 let eventName = req :> .headers.get("x-github-event") :> try;
@@ -164,13 +171,13 @@ let handleRequest = (req, info) => {
                     void
                   },
                 };
-                okResponse(JSON.stringify(JSON{ received: true }))
+                promiseResolve(okResponse(JSON.stringify(JSON{ received: true })))
               }
             }) :> try
           },
           None => {
             error("[Server] Unauthorized request!");
-            response("Unauthorized", 401)
+            promiseResolve(response("Unauthorized", 401))
           },
         }
       }) :> try
@@ -201,9 +208,9 @@ let runSimulation = () => {
     JSON["sign"],
   );
 
-  keyPromise.then((key) => {
+  keyPromise :> .then((key) => {
     let signaturePromise = subtle.sign("HMAC", key, encodeText(encoder, payloadText));
-    try(signaturePromise.then((sigBuffer) => {
+    try(signaturePromise :> .then((sigBuffer) => {
       let sigHex = hexFromBuffer(sigBuffer);
       log("Simulating incoming GitHub Webhook...");
       let requestPromise = fetch("http://localhost:8080", JSON{
@@ -216,14 +223,11 @@ let runSimulation = () => {
         body: payloadText,
       });
       requestPromise :> .then((res) => {
-        let responsePromise = res :> .json() :> try;
-        responsePromise :> .then((responseBody) => {
-          log("[Simulation] Server responded with:", responseBody);
-          setTimeout(() => {
-            log("Shutting down server...");
-            ac.abort();
-          }, 100);
-        }) :> try;
+        log("[Simulation] Server responded with:", res);
+        setTimeout(() => {
+          log("Shutting down server...");
+          ac.abort();
+        }, 100);
       }) :> try;
       void
     }));

@@ -185,7 +185,12 @@ function inferExprInner(
       const args = expr.args.map((arg) =>
         inferExpr(arg, env, typeEnv, adts, types, warnings, diagnostics, provenance, ffiObligations)
       );
-      t = ffiGetResultTy(typeEnv, jsArrayFfiCallValue(typeEnv, receiver, expr.path, args) ?? fresh());
+      t = ffiGetResultTy(
+        typeEnv,
+        jsArrayFfiCallValue(typeEnv, receiver, expr.path, args) ??
+          jsPromiseFfiCallValue(typeEnv, receiver, expr.path, args) ??
+          fresh(),
+      );
       break;
     }
     case "Lambda": {
@@ -407,4 +412,66 @@ function jsArrayTy(typeEnv: TypeEnv, element: Ty): Ty {
   const info = typeEnv.get("Js.Array");
   if (!info) throw new Error("unknown type Js.Array");
   return named(info, [element]);
+}
+
+function jsPromiseFfiCallValue(
+  typeEnv: TypeEnv,
+  receiver: Ty,
+  path: string[],
+  args: Ty[],
+): Ty | undefined {
+  const element = jsPromiseElement(typeEnv, receiver);
+  if (!element || path.length !== 1 || args.length !== 1) return undefined;
+  const member = path[0];
+  if (member === "then") {
+    const mapped = fresh("mapped");
+    const expected = fn([element], mapped);
+    constrain(jsPromiseCallbackActual(typeEnv, expected, args[0]), expected);
+    return jsPromiseTy(typeEnv, jsPromiseElement(typeEnv, mapped) ?? mapped);
+  }
+  if (member === "catch") {
+    return jsPromiseTy(typeEnv, element);
+  }
+  return undefined;
+}
+
+function jsPromiseElement(typeEnv: TypeEnv, receiver: Ty): Ty | undefined {
+  const target = prune(receiver);
+  if (target.tag !== "named" || target.id !== typeEnv.get("Js.Promise")?.id) return undefined;
+  return target.args[0];
+}
+
+function jsPromiseTy(typeEnv: TypeEnv, element: Ty): Ty {
+  const info = typeEnv.get("Js.Promise");
+  if (!info) throw new Error("unknown type Js.Promise");
+  return named(info, [element]);
+}
+
+function jsPromiseCallbackActual(typeEnv: TypeEnv, expected: Ty, actual: Ty): Ty {
+  const expectedFn = prune(expected);
+  const actualFn = prune(actual);
+  if (
+    expectedFn.tag !== "fn" || actualFn.tag !== "fn" ||
+    expectedFn.params.length !== 1 || actualFn.params.length !== 1
+  ) {
+    return actual;
+  }
+  if (!isJsObjectLikeTy(typeEnv, expectedFn.params[0]) || !isJsValueTy(typeEnv, actualFn.params[0])) {
+    return actual;
+  }
+  return fn([expectedFn.params[0]], actualFn.result);
+}
+
+function isJsValueTy(typeEnv: TypeEnv, type: Ty): boolean {
+  const target = prune(type);
+  return target.tag === "named" && target.id === typeEnv.get("Js.Value")?.id;
+}
+
+function isJsObjectLikeTy(typeEnv: TypeEnv, type: Ty): boolean {
+  const target = prune(type);
+  if (target.tag !== "named") return false;
+  return target.id === typeEnv.get("Js.Object")?.id ||
+    target.id === typeEnv.get("Js.Array")?.id ||
+    target.id === typeEnv.get("Js.Promise")?.id ||
+    Boolean(target.foreign || typeEnv.get(target.name)?.foreign);
 }

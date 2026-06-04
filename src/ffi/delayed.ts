@@ -547,7 +547,73 @@ function resolveDelayedFfiCall(
     );
   }
   const expressionRef = expressionRefForReceiver(expr.receiver, receiver, ffi, valueRefs);
+  const promise = jsPromiseReceiver(receiverType);
+  const reflectedPromiseMember = promise && expressionRef
+    ? jsRefCallMember(expressionRef, expr.path, expr.args.map(callArgHint))
+    : undefined;
+  const promiseMember = promise
+    ? withCallbackParamRefs(
+      jsPromiseMember(
+        promise,
+        expr.path,
+        promiseCallbackResultType(expr.args[0], result),
+        ffiCallPromiseElement(inferredType(result, expr)),
+      ),
+      reflectedPromiseMember,
+    )
+    : undefined;
+  if (promise && promiseMember) {
+    const callbackResult = promiseCallbackResultType(expr.args[0], result);
+    return materializeReceiverCall(
+      receiver,
+      expr.path,
+      expr.args,
+      promise.type,
+      promiseMember,
+      `__dynamic_promise.${typeExprKey(promise.type)}.${expr.path.join(".")}${
+        callbackResult ? `.${typeExprKey(tyToTypeExpr(callbackResult))}` : ""
+      }`,
+      ffi,
+      result,
+      selected,
+      options,
+      valueRefs,
+    );
+  }
   if (expressionRef) {
+    const promiseRef = jsPromiseReceiverTypeExpr(jsRefTypeExpr(expressionRef));
+    const reflectedPromiseMember = promiseRef
+      ? jsRefCallMember(expressionRef, expr.path, expr.args.map(callArgHint))
+      : undefined;
+    const promiseRefMember = promiseRef
+      ? withCallbackParamRefs(
+        jsPromiseMember(
+          promiseRef,
+          expr.path,
+          promiseCallbackResultType(expr.args[0], result),
+          ffiCallPromiseElement(inferredType(result, expr)),
+        ),
+        reflectedPromiseMember,
+      )
+      : undefined;
+    if (promiseRef && promiseRefMember) {
+      const callbackResult = promiseCallbackResultType(expr.args[0], result);
+      return materializeReceiverCall(
+        receiver,
+        expr.path,
+        expr.args,
+        promiseRef.type,
+        promiseRefMember,
+        `__dynamic_promise.${typeExprKey(promiseRef.type)}.${expr.path.join(".")}${
+          callbackResult ? `.${typeExprKey(tyToTypeExpr(callbackResult))}` : ""
+        }`,
+        ffi,
+        result,
+        selected,
+        options,
+        valueRefs,
+      );
+    }
     const callMember = jsRefCallMember(expressionRef, expr.path, expr.args.map(callArgHint));
     const member = callMember ?? jsRefMember(expressionRef, expr.path);
     if (member) {
@@ -639,6 +705,128 @@ function jsArrayMember(
     };
   }
   return undefined;
+}
+
+function jsPromiseReceiver(type: Ty | undefined): { element: TypeExpr; type: TypeExpr } | undefined {
+  if (!type) return undefined;
+  const target = prune(type);
+  if (target.tag !== "named" || target.name !== "Js.Promise" || target.args.length !== 1) {
+    return undefined;
+  }
+  const element = tyToTypeExpr(target.args[0]);
+  return { element, type: nameArgs("Js.Promise", [element]) };
+}
+
+function jsPromiseReceiverTypeExpr(
+  type: TypeExpr | undefined,
+): { element: TypeExpr; type: TypeExpr } | undefined {
+  if (type?.kind !== "TName" || type.name !== "Js.Promise" || type.args.length !== 1) {
+    return undefined;
+  }
+  return { element: type.args[0], type };
+}
+
+function jsPromiseMember(
+  promise: { element: TypeExpr; type: TypeExpr },
+  path: string[],
+  callbackResultType?: Ty,
+  callResultElement?: TypeExpr,
+): JsMemberType | undefined {
+  if (path.length !== 1) return undefined;
+  const member = path[0];
+  if (member === "then") {
+    const mapped = tvar("mapped");
+    const callback = callbackResultType
+      ? promiseCallbackType(promise.element, callbackResultType)
+      : undefined;
+    if (callback) {
+      return {
+        name: member,
+        type: fn([
+          callback.type,
+        ], nameArgs("Js.Promise", [dynamicPromiseElement(callResultElement ?? callback.element)])),
+      };
+    }
+    return {
+      name: member,
+      type: fn([fn([promise.element], mapped)], nameArgs("Js.Promise", [
+        dynamicPromiseElement(callResultElement ?? mapped),
+      ])),
+    };
+  }
+  if (member === "catch") {
+    return {
+      name: member,
+      type: fn([fn([name("Js.Value")], tvar("handled"))], promise.type),
+    };
+  }
+  return undefined;
+}
+
+function promiseCallbackType(
+  element: TypeExpr,
+  callbackResultType: Ty,
+): { type: TypeExpr; element: TypeExpr } | undefined {
+  const result = tyToTypeExpr(callbackResultType);
+  return {
+    type: fn([element], result),
+    element: promiseElementTypeExpr(result) ?? result,
+  };
+}
+
+function promiseCallbackResultType(arg: Expr | undefined, result: InferResult): Ty | undefined {
+  if (!arg) return undefined;
+  if (arg.kind === "Lambda") return inferredType(result, arg.body);
+  const type = inferredType(result, arg);
+  const target = type ? prune(type) : undefined;
+  return target?.tag === "fn" && target.params.length === 1 ? target.result : undefined;
+}
+
+function inferredType(result: InferResult, expr: Expr): Ty | undefined {
+  const direct = result.types.get(expr);
+  if (direct) return direct;
+  const id = expr.node?.id;
+  if (id === undefined) return undefined;
+  for (const [candidate, type] of result.types) {
+    if (candidate.node?.id === id) return type;
+  }
+  return undefined;
+}
+
+function withCallbackParamRefs(
+  member: JsMemberType | undefined,
+  refsFrom: JsMemberType | undefined,
+): JsMemberType | undefined {
+  if (!member || !refsFrom?.variants?.length) return member;
+  return {
+    ...member,
+    variants: memberVariants(member).map((variant, index) => ({
+      ...variant,
+      callbackParamRefs: refsFrom.variants?.[index]?.callbackParamRefs ??
+        refsFrom.variants?.[0]?.callbackParamRefs,
+    })),
+  };
+}
+
+function ffiCallPromiseElement(type: Ty | undefined): TypeExpr | undefined {
+  const target = type ? prune(type) : undefined;
+  if (target?.tag !== "named" || target.name !== "Result" || target.args.length !== 2) {
+    return undefined;
+  }
+  const value = prune(target.args[0]);
+  return value.tag === "named" && value.name === "Js.Promise" && value.args.length === 1
+    ? tyToTypeExpr(value.args[0])
+    : undefined;
+}
+
+function promiseElementTypeExpr(type: TypeExpr): TypeExpr | undefined {
+  return type.kind === "TName" && type.name === "Js.Promise" && type.args.length === 1
+    ? type.args[0]
+    : undefined;
+}
+
+function dynamicPromiseElement(type: TypeExpr): TypeExpr {
+  return type.kind === "TVar" ? name("Js.Value") : type;
 }
 
 function tyToTypeExpr(type: Ty): TypeExpr {
@@ -823,14 +1011,15 @@ function resolveDelayedCallArg(
   valueRefs: Map<string, JsTypeRef>,
 ): Expr {
   const callbackRefs = variant.callbackParamRefs?.find((item) => item.argIndex === argIndex);
+  const localValueRefs = refsForCallbackArg(new Map(valueRefs), arg, callbackRefs?.params);
   const rewritten = rewriteExprCalls(
     arg,
     ffi.bindings,
     selected,
-    refsForCallbackArg(new Map(), arg, callbackRefs?.params),
+    localValueRefs,
     new Map(),
     new Map(),
     ffi.foreignTypeRefs,
   );
-  return resolveDelayedExpr(rewritten, ffi, result, selected, options, new Map(valueRefs));
+  return resolveDelayedExpr(rewritten, ffi, result, selected, options, localValueRefs);
 }

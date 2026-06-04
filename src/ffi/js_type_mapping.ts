@@ -33,7 +33,7 @@ export function jsMemberTypeFromTsType(
           callbackParamRef?.(index, paramIndex, callbackParamIndex, callbackParamType, signature),
       ).map((variant) => ({
         ...variant,
-        resultRef: resultRef?.(index, signature),
+        resultRef: resultRefWithType(resultRef?.(index, signature), returnTypeOfVariant(variant.type)),
       }))
     ),
   );
@@ -46,6 +46,14 @@ export function jsMemberTypeFromTsType(
   };
 }
 
+function resultRefWithType(ref: JsTypeRef | undefined, type: TypeExpr): JsTypeRef | undefined {
+  return ref ? { ...ref, type } : undefined;
+}
+
+function returnTypeOfVariant(type: TypeExpr): TypeExpr {
+  return type.kind === "TFn" ? type.result : type;
+}
+
 export function typeExprFromTsType(
   checker: ts.TypeChecker,
   type: ts.Type,
@@ -56,6 +64,13 @@ export function typeExprFromTsType(
   ) {
     return name("String");
   }
+  if (
+    position === "param" && /\b(ArrayBuffer|ArrayBufferLike|BufferSource)\b/.test(checker.typeToString(type))
+  ) {
+    return name("Js.Object");
+  }
+  const awaited = awaitedTypeArgument(checker, type, position);
+  if (awaited) return awaited;
   const nullish = nullishUnionParts(type);
   if (nullish) {
     const inner = nullish.value
@@ -85,25 +100,42 @@ export function typeExprFromTsType(
   }
   const signature = type.getCallSignatures()[0];
   if (signature) return functionTypeFromSignature(checker, signature);
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const constraint = checker.getBaseConstraintOfType(type);
+    if (constraint && !isAnyOrUnknown(constraint)) {
+      return typeExprFromTsType(checker, constraint, position) ?? name("Js.Value");
+    }
+    return varType(type.symbol?.getName() ?? "a");
+  }
   if (isTsType(checker, type, "number")) return name("Number");
   if (isTsType(checker, type, "string")) return name("String");
   if (isTsType(checker, type, "boolean")) return name("Bool");
   if (type.flags & ts.TypeFlags.StringLiteral) return name("String");
   if (type.flags & ts.TypeFlags.NumberLiteral) return name("Number");
   if (type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) return name("Void");
+  const promised = promiseElementType(checker, type, position);
+  if (promised) return { kind: "TName", name: "Js.Promise", args: [promised] };
   if (isNumericTypedArray(checker, type)) {
     return { kind: "TName", name: "Js.Array", args: [name("Number")] };
   }
   const arrayElement = arrayElementType(checker, type, position);
   if (arrayElement) return { kind: "TName", name: "Js.Array", args: [arrayElement] };
   if (position === "result" && isObjectLike(type)) return name("Js.Object");
-  if (type.flags & ts.TypeFlags.TypeParameter) {
-    const constraint = checker.getBaseConstraintOfType(type);
-    if (constraint) {
-      return typeExprFromTsType(checker, constraint, position) ?? name("Js.Value");
-    }
-  }
   return name("Js.Value");
+}
+
+function awaitedTypeArgument(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  position: "param" | "result",
+): TypeExpr | undefined {
+  const text = checker.typeToString(type);
+  const match = /^Awaited<([A-Za-z_][A-Za-z0-9_]*)>$/.exec(text);
+  if (match) return varType(match[1]);
+  if (!/^Awaited<.+>$/.test(text)) return undefined;
+  const ref = type as ts.TypeReference;
+  const arg = ref.typeArguments?.[0] ?? checker.getTypeArguments(ref)[0];
+  return arg ? typeExprFromTsType(checker, arg, position) ?? name("Js.Value") : name("Js.Value");
 }
 
 function nullishUnionParts(type: ts.Type): { value?: ts.Type } | undefined {
@@ -354,6 +386,21 @@ function arrayElementType(
     return undefined;
   }
   return typeExprFromArrayElement(checker, checker.getIndexTypeOfType(type, ts.IndexKind.Number));
+}
+
+function promiseElementType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  position: "param" | "result",
+): TypeExpr | undefined {
+  const promised = (checker as { getPromisedTypeOfPromise?: (type: ts.Type) => ts.Type | undefined })
+    .getPromisedTypeOfPromise?.(type);
+  if (promised) return typeExprFromTsType(checker, promised, position) ?? name("Js.Value");
+  const text = checker.typeToString(type);
+  if (!/\bPromise(?:Like)?\b/.test(text)) return undefined;
+  const ref = type as ts.TypeReference;
+  const typeArg = ref.typeArguments?.[0] ?? checker.getTypeArguments(ref)[0];
+  return typeArg ? typeExprFromTsType(checker, typeArg, position) ?? name("Js.Value") : name("Js.Value");
 }
 
 function isNumericTypedArray(checker: ts.TypeChecker, type: ts.Type): boolean {

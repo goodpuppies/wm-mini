@@ -152,7 +152,7 @@ export function prependReceiver(
 export function selectVariant(variants: FfiVariant[], args: Expr[]): FfiVariant | undefined {
   return variants
     .filter((candidate) => typeCallArity(candidate.type) === args.length)
-    .map((candidate) => ({ candidate, score: callScore(candidate.type, args) }))
+    .map((candidate) => ({ candidate, score: callScore(candidate, args) }))
     .sort((left, right) => left.score - right.score)[0]?.candidate;
 }
 
@@ -163,17 +163,38 @@ export function ffiOverloadMessage(name: string, variants: FfiVariant[], args: E
   }`;
 }
 
-function callScore(type: TypeExpr, args: Expr[]): number {
+function callScore(candidate: FfiVariant, args: Expr[]): number {
+  const type = candidate.type;
   if (type.kind !== "TFn") return Number.POSITIVE_INFINITY;
-  return type.params.reduce((score, param, index) => score + argScore(param, args[index]), 0);
+  return type.params.reduce(
+    (score, param, index) => score + argScore(param, args[index], candidate),
+    0,
+  );
 }
 
-function argScore(expected: TypeExpr, arg: Expr): number {
+function argScore(expected: TypeExpr, arg: Expr, candidate: FfiVariant): number {
   const actual = literalType(arg);
-  if (!actual) return 1;
+  if (arg.kind === "Lambda") return expected.kind === "TFn" ? 0 : 8;
+  if (!actual) return unknownArgScore(expected, candidate);
   if (expected.kind === "TName" && expected.name === actual) return 0;
+  if (actual === "Js.Value" && expected.kind === "TName" && expected.name === "Js.Object") return 1;
   if (expected.kind === "TName" && expected.name === "Js.Value") return 2;
   return 10;
+}
+
+function unknownArgScore(expected: TypeExpr, candidate: FfiVariant): number {
+  if (expected.kind !== "TName") return 2;
+  if (candidate.target.kind === "JsConstructor") {
+    if (expected.name === "Js.Object") return 0;
+    if (expected.name === "Js.Value") return 1;
+    if (expected.name === "Js.Array" || expected.name === "Js.Promise") return 2;
+  } else {
+    if (expected.name === "Js.Array" || expected.name === "Js.Promise") return 0;
+    if (expected.name === "Js.Object") return 1;
+    if (expected.name === "Js.Value") return 2;
+  }
+  if (expected.name === "Number" || expected.name === "String" || expected.name === "Bool") return 4;
+  return 2;
 }
 
 function literalType(expr: Expr): string | undefined {

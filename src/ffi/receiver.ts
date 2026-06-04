@@ -50,13 +50,14 @@ export function reflectedReceiverCallCandidate(
   const baseName = parts[0];
   const ref = refs.get(baseName);
   if (!ref) return undefined;
+  if (isJsPromiseRef(ref)) return undefined;
   const path = parts.slice(1);
   const callMember = jsRefCallMember(ref, path, args.map(callArgHint));
   const member = callMember ?? jsRefMember(ref, path);
   if (!member) return undefined;
   const suffix = callMember ? `(${callHintKey(args)})` : "";
   const surfaceName = `__receiver.${ref.key}.${path.join(".")}${suffix}`;
-  const receiverType = primitiveReceiverType(jsRefTypeExpr(ref));
+  const receiverType = knownReceiverType(jsRefTypeExpr(ref));
   addVariants(
     bindings,
     surfaceName,
@@ -95,11 +96,12 @@ export function reflectedReceiverProperty(
   const baseName = parts[0];
   const ref = refs.get(baseName);
   if (!ref) return undefined;
+  if (isJsPromiseRef(ref)) return undefined;
   const path = parts.slice(1);
   const member = jsRefMember(ref, path);
   if (!member) return undefined;
   const surfaceName = `__receiver.${ref.key}.${path.join(".")}`;
-  const reflectedReceiverType = receiverType ?? primitiveReceiverType(jsRefTypeExpr(ref));
+  const reflectedReceiverType = receiverType ?? knownReceiverType(jsRefTypeExpr(ref));
   addVariants(
     bindings,
     surfaceName,
@@ -197,7 +199,7 @@ export function objectReceiverCall(
   const baseName = parts[0];
   const access = objectAccess.get(baseName);
   if (access?.kind === "ref") {
-    return reflectedReceiverCallCandidate(
+    const reflected = reflectedReceiverCallCandidate(
       exprName,
       args,
       bindings,
@@ -205,6 +207,16 @@ export function objectReceiverCall(
       new Map([[baseName, access.ref]]),
       jsRefCallMember,
     );
+    if (reflected) return reflected;
+    if (isJsPromiseRef(access.ref)) {
+      return {
+        kind: "FfiCall",
+        receiver: { kind: "Var", name: baseName },
+        path: parts.slice(1),
+        args,
+      };
+    }
+    return undefined;
   }
   if (access?.kind === "dynamic") {
     const path = parts.slice(1);
@@ -285,14 +297,26 @@ function isJsObjectType(type: TypeExpr | undefined): boolean {
   return type?.kind === "TName" && type.name === "Js.Object" && type.args.length === 0;
 }
 
-function primitiveReceiverType(type: TypeExpr | undefined): TypeExpr | undefined {
+function knownReceiverType(type: TypeExpr | undefined): TypeExpr | undefined {
   if (
     type?.kind === "TName" && type.args.length === 0 &&
     (type.name === "String" || type.name === "Number" || type.name === "Bool")
   ) {
     return type;
   }
+  if (
+    type?.kind === "TName" &&
+    (type.name === "Js.Array" || type.name === "Js.Promise")
+  ) {
+    return type;
+  }
   return undefined;
+}
+
+function isJsPromiseRef(ref: JsTypeRef): boolean {
+  const type = jsRefTypeExpr(ref);
+  return type?.kind === "TName" && type.name === "Js.Promise" ||
+    /\bPromise(?:Like)?\b/.test(ref.expr);
 }
 
 export function rememberLetRefs(

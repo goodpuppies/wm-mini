@@ -222,8 +222,48 @@ Deno.test("supports inferred callable root JS globals", async () => {
     let response = fetch("https://example.test");
   `);
 
-  expectBinding(result.env, "response", { type: "Result<Js.Object, Js.Error>", vars: 0 });
+  expectBinding(result.env, "response", { type: "Result<Js.Promise<Js.Object>, Js.Error>", vars: 0 });
   assertStringIncludes(js, '__wm_js_member("fetch")');
+});
+
+Deno.test("supports Js.Promise as a basis type", async () => {
+  const result = await checkSource(`
+    let promise: Js.Promise<String> = Panic("promise");
+  `);
+
+  expectBinding(result.env, "promise", { type: "Js.Promise<String>", vars: 0 });
+});
+
+Deno.test("maps reflected TS promises to Js.Promise", async () => {
+  const result = await checkSource(`
+    from js.global("Deno") import { readTextFile };
+    let file = readTextFile("README.md");
+  `);
+
+  expectBinding(result.env, "file", {
+    type: "Result<Js.Promise<String>, Js.Error>",
+    vars: 0,
+  });
+});
+
+Deno.test("typed JS promise receiver results infer through then", async () => {
+  const result = await checkSource(`
+    from js.global("Deno") import { readTextFile };
+    let try = (result) => {
+      match(result) {
+        Ok(value) => { value },
+        Err(_) => { Panic("ffi") },
+      }
+    };
+    let readBang = () => {
+      let file = readTextFile("README.md") :> try;
+      file :> .then((text) => {
+        text ++ "!"
+      }) :> try
+    };
+  `);
+
+  expectBinding(result.env, "readBang", { type: "(Void) => Js.Promise<String>", vars: 0 });
 });
 
 Deno.test("maps function-valued JS union parameters as JS values", async () => {
@@ -247,7 +287,7 @@ Deno.test("maps object-bearing JS union parameters as JS values", async () => {
     );
   `);
 
-  expectBinding(result.env, "key", { type: "Js.Object", vars: 0 });
+  expectBinding(result.env, "key", { type: "Js.Promise<Js.Object>", vars: 0 });
 });
 
 Deno.test("uses expression JS refs for coarse object receiver methods", async () => {
@@ -265,7 +305,10 @@ Deno.test("uses expression JS refs for coarse object receiver methods", async ()
   `);
 
   expectBinding(result.env, "host", { type: "(Void) => Result<String, Js.Error>", vars: 0 });
-  expectBinding(result.env, "install", { type: "(Void) => Result<Js.Object, Js.Error>", vars: 0 });
+  expectBinding(result.env, "install", {
+    type: "(Void) => Result<Js.Promise<Void>, Js.Error>",
+    vars: 0,
+  });
 });
 
 Deno.test("preserves expression refs through block-local Result pass-through lets", async () => {
@@ -286,7 +329,7 @@ Deno.test("preserves expression refs through block-local Result pass-through let
     };
   `);
 
-  expectBinding(result.env, "install", { type: "(Void) => Js.Object", vars: 0 });
+  expectBinding(result.env, "install", { type: "(Void) => Js.Promise<Js.Value>", vars: 0 });
 });
 
 Deno.test("preserves delayed receiver refs through block-local Result pass-through lets", async () => {
@@ -304,7 +347,7 @@ Deno.test("preserves delayed receiver refs through block-local Result pass-throu
     };
   `);
 
-  expectBinding(result.env, "useText", { type: "(Request) => Js.Object", vars: 0 });
+  expectBinding(result.env, "useText", { type: "(Request) => Js.Promise<Js.Value>", vars: 0 });
 });
 
 Deno.test("infers named JS callback parameter refs from later call sites", async () => {
@@ -323,7 +366,10 @@ Deno.test("infers named JS callback parameter refs from later call sites", async
     let server = serve(JSON{ port: 8080 }, handle);
   `);
 
-  expectBinding(result.env, "handle", { type: "((Request, 'a)) => Js.Object", vars: 1 });
+  expectBinding(result.env, "handle", {
+    type: "((Request, 'a)) => Js.Promise<Js.Value>",
+    vars: 1,
+  });
 });
 
 Deno.test("unannotated helper JS receivers preserve callback foreign refs", async () => {
@@ -352,8 +398,11 @@ Deno.test("unannotated helper JS receivers preserve callback foreign refs", asyn
   const results = await checkVirtual("/test/server.wm", virtualFs);
   const result = results.get("/test/server.wm")!;
 
-  expectBinding(result.env, "helper", { type: "(Request) => Js.Object", vars: 0 });
-  expectBinding(result.env, "handle", { type: "((Request, 'a)) => Js.Object", vars: 1 });
+  expectBinding(result.env, "helper", { type: "(Request) => Js.Promise<Js.Value>", vars: 0 });
+  expectBinding(result.env, "handle", {
+    type: "((Request, 'a)) => Js.Promise<Js.Value>",
+    vars: 1,
+  });
 });
 
 Deno.test("unresolved JS FFI property results cannot escape as generic values", async () => {

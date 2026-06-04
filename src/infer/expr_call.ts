@@ -123,7 +123,12 @@ function jsImportActualArg(expected: Ty, actual: Ty, typeEnv: TypeEnv): Ty {
   ) {
     return expectedType;
   }
-  if (isJsObjectType(expectedType, typeEnv) && isForeignObjectType(actualType, typeEnv)) {
+  if (isJsObjectType(expectedType, typeEnv) && isJsObjectLikeType(actualType, typeEnv)) {
+    const jsObject = typeEnv.get("Js.Object");
+    if (!jsObject) throw new Error("unknown type Js.Object");
+    return named(jsObject);
+  }
+  if (isJsObjectType(expectedType, typeEnv) && isJsValueType(actualType, typeEnv)) {
     const jsObject = typeEnv.get("Js.Object");
     if (!jsObject) throw new Error("unknown type Js.Object");
     return named(jsObject);
@@ -176,7 +181,7 @@ function isForeignObjectType(type: Ty, typeEnv: TypeEnv): boolean {
 function isJsObjectLikeType(type: Ty, typeEnv: TypeEnv): boolean {
   const t = prune(type);
   return isJsObjectType(t, typeEnv) || isJsArrayType(t, typeEnv) ||
-    isForeignObjectType(t, typeEnv) || isRecordType(t, typeEnv);
+    isJsPromiseType(t, typeEnv) || isForeignObjectType(t, typeEnv) || isRecordType(t, typeEnv);
 }
 
 function isJsObjectType(type: Ty, typeEnv: TypeEnv): boolean {
@@ -192,6 +197,11 @@ function isJsValueType(type: Ty, typeEnv: TypeEnv): boolean {
 function isJsArrayType(type: Ty, typeEnv: TypeEnv): boolean {
   const t = prune(type);
   return t.tag === "named" && t.id === typeEnv.get("Js.Array")?.id;
+}
+
+function isJsPromiseType(type: Ty, typeEnv: TypeEnv): boolean {
+  const t = prune(type);
+  return t.tag === "named" && t.id === typeEnv.get("Js.Promise")?.id;
 }
 
 function isRecordType(type: Ty, typeEnv: TypeEnv): boolean {
@@ -227,6 +237,10 @@ function assertJsCompatible(type: Ty, typeEnv: TypeEnv) {
     case "named":
       if (t.name === "Js.Value" || t.name === "Js.Object" || t.name === "Js.Error") return;
       if (t.name === "Js.Array" && t.args.length === 1) {
+        assertJsCompatible(t.args[0], typeEnv);
+        return;
+      }
+      if (t.name === "Js.Promise" && t.args.length === 1) {
         assertJsCompatible(t.args[0], typeEnv);
         return;
       }
