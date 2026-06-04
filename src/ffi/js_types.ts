@@ -115,6 +115,36 @@ export function jsGlobalValueRef(name: string): JsTypeRef {
   };
 }
 
+export function jsGlobalValueMember(name: string): JsMemberType | undefined {
+  const ref = jsGlobalValueRef(name);
+  const key = `${ref.key}:call`;
+  if (memberCache.has(key)) return memberCache.get(key);
+  const reflected = reflectSource(
+    key,
+    ref.source,
+    (checker, sourceFile) => {
+      const value = findVariable(sourceFile, ref.expr)?.initializer;
+      if (!value) return undefined;
+      const mapped = jsMemberTypeFromTsType(
+        checker,
+        checker.getTypeAtLocation(value),
+        (index) =>
+          returnTypeRef(`${key}:return:${index}`, ref.source, `ReturnType<typeof ${ref.expr}>`),
+        (index, paramIndex, callbackParamIndex, callbackParamType) =>
+          typeRefFromTsType(
+            `${key}:callback:${index}:${paramIndex}:${callbackParamIndex}`,
+            checker,
+            callbackParamType,
+            ref.source,
+          ),
+      );
+      return mapped ? { name, ...mapped } : undefined;
+    },
+  );
+  memberCache.set(key, reflected);
+  return reflected;
+}
+
 export function jsPrimitiveValueRef(name: "String" | "Number" | "Bool"): JsTypeRef {
   const tsType = name === "String" ? "string" : name === "Number" ? "number" : "boolean";
   const suffix = `primitive_${tsType}`;
@@ -278,7 +308,11 @@ export function jsRefCallMember(
       : `__wm_arg_${index}`
   );
   const argDecls = args
-    .map((arg, index) => arg.kind === "unknown" ? `declare const __wm_arg_${index}: any;` : "")
+    .flatMap((arg, index) => {
+      if (arg.kind === "unknown") return [`declare const __wm_arg_${index}: any;`];
+      if (arg.kind === "function") return [`declare const __wm_cb_return_${index}: any;`];
+      return [];
+    })
     .filter((line) => line.length > 0)
     .join("\n");
   const callExpr = `${access}(${argExprs.join(", ")})`;
@@ -324,22 +358,44 @@ function functionTypeFromCall(
   args: JsCallArgHint[],
 ): TypeExpr {
   const signatureParams = signature.getParameters();
+  const declaration = signature.getDeclaration();
   const params = call.arguments.map((arg, index) => {
     if (args[index]?.kind === "function") {
-      return typeExprFromTsType(checker, checker.getTypeAtLocation(arg), "param") ??
+      const callbackType = typeExprFromTsType(checker, checker.getTypeAtLocation(arg), "param") ??
         name("Js.Value");
+      return loosenSyntheticCallbackReturn(callbackType, index);
     }
     if (args[index]?.kind === "string") return name("String");
     const symbolType = signatureParams[index]
       ? typeOfSymbol(checker, signatureParams[index])
       : undefined;
-    return symbolType
+    const mapped = symbolType
       ? typeExprFromTsType(checker, symbolType, "param") ?? name("Js.Value")
       : name("Js.Value");
+    return stripSuppliedOptionalParam(mapped, declaration, index);
   });
   const result = typeExprFromTsType(checker, checker.getReturnTypeOfSignature(signature)) ??
     name("Js.Value");
   return fn(params, result);
+}
+
+function loosenSyntheticCallbackReturn(type: TypeExpr, index: number): TypeExpr {
+  if (type.kind !== "TFn") return type;
+  if (type.result.kind !== "TName" || type.result.name !== "Js.Value") return type;
+  return { ...type, result: varType(`cb${index}Result`) };
+}
+
+function stripSuppliedOptionalParam(
+  type: TypeExpr,
+  declaration: ts.SignatureDeclaration | undefined,
+  index: number,
+): TypeExpr {
+  const param = declaration?.parameters[index];
+  const optional = !!param?.questionToken || !!param?.initializer;
+  if (!optional || type.kind !== "TName" || type.name !== "Option" || type.args.length !== 1) {
+    return type;
+  }
+  return type.args[0];
 }
 
 function functionArgExpr(index: number, arity: number): string {
@@ -347,7 +403,7 @@ function functionArgExpr(index: number, arity: number): string {
     { length: arity },
     (_, paramIndex) => `__wm_cb_${index}_${paramIndex}`,
   );
-  return `(${params.join(", ")}) => undefined`;
+  return `(${params.join(", ")}) => __wm_cb_return_${index}`;
 }
 
 function jsTargetMember(target: JsReflectionSource, name: string): JsMemberType | undefined {
@@ -397,6 +453,11 @@ function typeRefFromTsType(
   type: ts.Type,
   source = "",
 ): JsTypeRef {
+  const nominal = nominalObjectTypeName(checker, type);
+  if (nominal) {
+    const ref = typeRefFromSource(`global-type:${nominal}`, source, nominal);
+    return { ...ref, type: { kind: "TName", name: nominal, args: [] } };
+  }
   const suffix = sanitize(key);
   const typeName = `__wm_type_${suffix}`;
   const expr = `__wm_ref_${suffix}`;
@@ -408,6 +469,17 @@ function typeRefFromTsType(
     expr,
     type: typeExprFromTsType(checker, type, "param"),
   };
+}
+
+function nominalObjectTypeName(checker: ts.TypeChecker, type: ts.Type): string | undefined {
+  if (!(type.flags & ts.TypeFlags.Object)) return undefined;
+  const symbol = type.aliasSymbol ?? type.getSymbol();
+  const name = symbol?.getName();
+  if (!name || name === "__type" || name === "Object") return undefined;
+  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return undefined;
+  const text = checker.typeToString(type);
+  if (/[<>{}&|()[\],]/.test(text)) return undefined;
+  return name;
 }
 
 function typeRefFromSource(key: string, source: string, typeExpr: string): JsTypeRef {

@@ -241,6 +241,19 @@ let args = JSON["-s", "https://example.com"];
 ```
 
 These are the current practical way to pass plain JS object/array data into JS APIs.
+When a dynamic boundary has been asserted to an expected shape, `Js.Array<T>` can carry element
+metadata for JavaScript arrays while remaining an opaque JS value:
+
+```wm
+record Commit = { id: String, message: String };
+record PushPayload = { commits: Js.Array<Commit> };
+
+let payload: PushPayload = JSON.parse(bodyText) :> Json.assert :> try;
+let commits = payload.commits;
+```
+
+Annotations on dynamic receiver results, such as a mapped `Js.Array<String>`, are intentionally not
+casts. They currently require a real assertion or a more precise reflected receiver path.
 
 Example:
 
@@ -364,6 +377,8 @@ let content = match(body.content) {
 - Promise-heavy code often needs `Js.Object` annotations.
 - Optional arguments may require `Some(value)`.
 - `JSON{}` and `JSON[]` are currently the clearest way to pass object/array-shaped JS data.
+- `Js.Array<T>` currently supports only a small reflected dynamic receiver surface, such as
+  `.map`, `.join`, and `.length`.
 - Workman records and tuples are not yet automatically adapted to JS object/tuple-like shapes.
 - Unsafe imports do not make every derived receiver call unsafe.
 - Dynamic JS property access is useful, but less precise than reflected foreign types.

@@ -197,8 +197,19 @@ Mul = left:Unary rest:(_ op:("*" / "/" / "%") _ right:Unary { return { op, right
   { return rest.reduce((left, r) => at({ kind: "Binary", op: r.op, left, right: r.right }, location()), left); }
 
 Unary = op:("!" / "-") _ value:Unary { return at({ kind: "Unary", op, value }, location()); } / Pipe
-Pipe = left:Postfix rest:(_ ":>" _ right:Postfix { return right; })*
-  { return rest.reduce((left, right) => at({ kind: "Pipe", left, right }, location()), left); }
+Pipe = left:Postfix rest:(_ ":>" _ right:(PipeMember / Postfix) { return right; })*
+  {
+    return rest.reduce((left, right) => {
+      if (right.kind === "PipeMember") {
+        return right.args === undefined
+          ? at({ kind: "FfiGet", receiver: left, path: right.path }, location())
+          : at({ kind: "FfiCall", receiver: left, path: right.path, args: right.args }, location());
+      }
+      return at({ kind: "Pipe", left, right }, location());
+    }, left);
+  }
+PipeMember = "." first:MemberName rest:("." n:MemberName { return n; })* call:(_ "(" _ args:ArgList? _ ")" { return args ?? []; })?
+  { return { kind: "PipeMember", path: [first, ...rest], args: call ?? undefined }; }
 Postfix = head:Primary tail:(_ "(" _ args:ArgList? _ ")" { return args ?? []; })*
   { return tail.reduce((callee, args) => at({ kind: "Call", callee, args }, location()), head); }
 

@@ -6,6 +6,7 @@ import {
   jsGlobalMembers,
   jsGlobalMemberTypeRef,
   jsGlobalTypeRef,
+  jsGlobalValueMember,
   jsGlobalValueRef,
   type JsMemberType,
   jsModuleMember,
@@ -53,6 +54,18 @@ export function collectFfiDecl(
           "new",
           { kind: "JsConstructor", path: spec.name },
           specializeForeignResultVariants(memberVariants(construct), importedTypeRefs),
+          !decl.clause.unsafe,
+          spec.node,
+        );
+      }
+      const callable = jsGlobalValueMember(spec.name);
+      if (callable) {
+        addVariants(
+          bindings,
+          surfaceName,
+          spec.name,
+          decl.target,
+          memberVariants(callable),
           !decl.clause.unsafe,
           spec.node,
         );
@@ -154,10 +167,10 @@ export function generatedJsImports(
   }
   const clauseNode = decl.clause.node;
   return decl.clause.specs.flatMap((spec) => {
-    if (decl.target.kind === "JsGlobalRoot" && !spec.type) return [];
     const localName = spec.alias ?? spec.name;
     const surfaceName = decl.clause.alias ? `${decl.clause.alias}.${localName}` : localName;
     const binding = bindings.get(surfaceName);
+    if (decl.target.kind === "JsGlobalRoot" && !spec.type && !binding) return [];
     if (!binding) return [namedJsImportDecl(decl, [spec], clauseNode)];
     const variants = binding.variants;
     if (variants.length === 1 && !decl.clause.alias) {

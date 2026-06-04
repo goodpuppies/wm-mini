@@ -1,6 +1,7 @@
 import type { Decl, Expr } from "../ast.ts";
 import type { JsTypeRef } from "./js_types.ts";
 import {
+  letBindingPassesThroughOkPayload,
   type ObjectAccess,
   okPayloadBinders,
   rememberLetRefs,
@@ -16,6 +17,7 @@ type RewriteDecl = (
   resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
+  passThroughRefs: Set<string>,
   rewriteExpr: RewriteExpr,
 ) => Decl;
 
@@ -27,6 +29,7 @@ type RewriteExpr = (
   resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
+  passThroughRefs?: Set<string>,
 ) => Expr;
 
 export function rewriteBlock(
@@ -37,12 +40,14 @@ export function rewriteBlock(
   resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
+  passThroughRefs: Set<string>,
   rewriteDecl: RewriteDecl,
   rewriteExpr: RewriteExpr,
 ): Expr {
   const localRefs = new Map(refs);
   const localResultRefs = new Map(resultRefs);
   const localObjectAccess = new Map(objectAccess);
+  const localPassThroughRefs = new Set(passThroughRefs);
   const items = expr.items.map((item) => {
     const rewritten = isDecl(item)
       ? rewriteDecl(
@@ -53,6 +58,7 @@ export function rewriteBlock(
         localResultRefs,
         localObjectAccess,
         importedTypeRefs,
+        localPassThroughRefs,
         rewriteExpr,
       )
       : rewriteExpr(
@@ -63,8 +69,12 @@ export function rewriteBlock(
         localResultRefs,
         localObjectAccess,
         importedTypeRefs,
+        localPassThroughRefs,
       );
     if (isDecl(rewritten)) {
+      for (const name of letBindingPassesThroughOkPayload(rewritten)) {
+        localPassThroughRefs.add(name);
+      }
       rememberLetRefs(
         rewritten,
         bindings,
@@ -72,6 +82,7 @@ export function rewriteBlock(
         localResultRefs,
         localObjectAccess,
         importedTypeRefs,
+        localPassThroughRefs,
       );
     }
     return rewritten;
@@ -87,6 +98,7 @@ export function rewriteBlock(
       localResultRefs,
       localObjectAccess,
       importedTypeRefs,
+      localPassThroughRefs,
     ),
   };
 }

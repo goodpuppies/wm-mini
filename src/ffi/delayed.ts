@@ -1,4 +1,4 @@
-import type { Decl, Expr, TypeExpr } from "../ast.ts";
+import type { Decl, Expr, Param, TypeExpr } from "../ast.ts";
 import { diagnosticError } from "../diagnostics.ts";
 import type { InferResult } from "../infer.ts";
 import { prune, show, type Ty } from "../types.ts";
@@ -6,6 +6,7 @@ import {
   addVariants,
   callArgHint,
   callHintKey,
+  dynamicReceiverArgType,
   type FfiBinding,
   type FfiElaboration,
   type FfiVariant,
@@ -14,12 +15,23 @@ import {
   isDecl,
   memberVariants,
   name,
+  nameArgs,
+  paramBinder,
   prependReceiver,
   refsForCallbackArg,
   selectVariant,
+  tvar,
 } from "./shared.ts";
 import { rewriteExprCalls } from "./elab.ts";
-import { type JsMemberType, jsRefCallMember, jsRefMember, type JsTypeRef } from "./js_types.ts";
+import { resultRefForExpr } from "./receiver.ts";
+import {
+  type JsMemberType,
+  jsPrimitiveValueRef,
+  jsRefCallMember,
+  jsRefMember,
+  jsRefTypeExpr,
+  type JsTypeRef,
+} from "./js_types.ts";
 
 type ResolveOptions = {
   receiverTypes?: Map<Expr, Ty>;
@@ -31,15 +43,22 @@ export function resolveDelayedFfiElaboration(
   result: InferResult,
   options: ResolveOptions = {},
 ): FfiElaboration {
+  rejectAnnotatedDynamicCallbacks(ffi.module.decls, ffi.bindings);
   const selected = new Set<string>();
+  const valueRefs = new Map<string, JsTypeRef>();
+  const decls: Decl[] = [];
+  for (const decl of ffi.module.decls) {
+    const resolved = resolveDelayedDecl(decl, ffi, result, selected, options, valueRefs);
+    rememberDelayedLetRefs(resolved, ffi, valueRefs);
+    decls.push(resolved);
+  }
   const module = {
     ...ffi.module,
-    decls: ffi.module.decls.map((decl) => resolveDelayedDecl(decl, ffi, result, selected, options)),
+    decls,
   };
   const foreignDecls = generatedForeignDeclsForOverrides(module.decls, options.receiverTypes);
   const imports = generatedReceiverJsImports(ffi.bindings, selected);
-  const split = module.decls.findIndex((decl) => decl.kind !== "ForeignTypeDecl");
-  const prefixLength = split === -1 ? module.decls.length : split;
+  const prefixLength = generatedImportInsertionIndex(module.decls);
   return {
     ...ffi,
     module: imports.length || foreignDecls.length
@@ -55,6 +74,143 @@ export function resolveDelayedFfiElaboration(
       : module,
     selected: new Set([...ffi.selected, ...selected]),
   };
+}
+
+function generatedImportInsertionIndex(decls: Decl[]): number {
+  let lastTypeDecl = -1;
+  for (let index = 0; index < decls.length; index++) {
+    const kind = decls[index].kind;
+    if (kind === "ForeignTypeDecl" || kind === "RecordDecl" || kind === "TypeDecl") {
+      lastTypeDecl = index;
+    }
+  }
+  if (lastTypeDecl !== -1) return lastTypeDecl + 1;
+  const firstLet = decls.findIndex((decl) => decl.kind === "LetDecl");
+  return firstLet === -1 ? decls.length : firstLet;
+}
+
+function rejectAnnotatedDynamicCallbacks(
+  decls: Decl[],
+  bindings: Map<string, FfiBinding>,
+) {
+  const annotatedLambdas = annotatedLambdaBindings(decls);
+  const variants = new Map<string, FfiVariant>();
+  for (const binding of bindings.values()) {
+    for (const variant of binding.variants) variants.set(variant.internalName, variant);
+    if (binding.variants.length === 1) variants.set(binding.surfaceName, binding.variants[0]);
+  }
+  const visit = (expr: Expr) => {
+    switch (expr.kind) {
+      case "FfiCall":
+        expr.args.forEach((arg) => rejectAnnotatedCallbackArg(arg, annotatedLambdas));
+        visit(expr.receiver);
+        expr.args.forEach(visit);
+        return;
+      case "Call": {
+        const variant = expr.callee.kind === "Var" ? variants.get(expr.callee.name) : undefined;
+        if (variant?.target.kind === "JsReceiver" && expr.callee.kind === "Var") {
+          const dynamic = expr.callee.name.includes("__dynamic");
+          if (dynamic) expr.args.forEach((arg) => rejectAnnotatedCallbackArg(arg, annotatedLambdas));
+        }
+        visit(expr.callee);
+        expr.args.forEach(visit);
+        return;
+      }
+      case "Tuple":
+      case "JsonArray":
+        expr.items.forEach(visit);
+        return;
+      case "Record":
+      case "JsonObject":
+        expr.fields.forEach((field) => visit(field.value));
+        return;
+      case "Lambda":
+        visit(expr.body);
+        return;
+      case "If":
+        visit(expr.cond);
+        visit(expr.thenExpr);
+        visit(expr.elseExpr);
+        return;
+      case "Match":
+        visit(expr.value);
+        expr.arms.forEach((arm) => visit(arm.body));
+        return;
+      case "Panic":
+        visit(expr.message);
+        return;
+      case "Block":
+        for (const item of expr.items) {
+          if (isDecl(item)) visitDecl(item);
+          else visit(item);
+        }
+        visit(expr.result);
+        return;
+      case "Binary":
+        visit(expr.left);
+        visit(expr.right);
+        return;
+      case "Unary":
+        visit(expr.value);
+        return;
+      case "Pipe":
+        visit(expr.left);
+        visit(expr.right);
+        return;
+    }
+  };
+  const visitDecl = (decl: Decl) => {
+    if (decl.kind !== "LetDecl") return;
+    for (const binding of decl.bindings) visit(binding.value);
+  };
+  decls.forEach(visitDecl);
+}
+
+function annotatedLambdaBindings(decls: Decl[]): Map<string, Expr> {
+  const result = new Map<string, Expr>();
+  const visitDecl = (decl: Decl) => {
+    if (decl.kind !== "LetDecl") return;
+    for (const binding of decl.bindings) {
+      if (
+        binding.pattern.kind === "PVar" && binding.value.kind === "Lambda" &&
+        binding.value.params.some((param) => param.annotation)
+      ) {
+        result.set(binding.pattern.name, binding.value);
+      }
+      visitExpr(binding.value);
+    }
+  };
+  const visitExpr = (expr: Expr) => {
+    if (expr.kind === "Block") {
+      expr.items.forEach((item) => {
+        if (isDecl(item)) visitDecl(item);
+      });
+    }
+  };
+  decls.forEach(visitDecl);
+  return result;
+}
+
+function rejectAnnotatedCallbackArg(arg: Expr, annotatedLambdas: Map<string, Expr>) {
+  if (
+    arg.kind === "Lambda" &&
+    arg.params.some((param) => param.annotation)
+  ) {
+    throw diagnosticError(
+      new Error(
+        "JS callback parameter annotations cannot cast dynamic callback arguments; use reflection or an explicit assertion inside the callback",
+      ),
+      arg.node,
+    );
+  }
+  if (arg.kind === "Var" && annotatedLambdas.has(arg.name)) {
+    throw diagnosticError(
+      new Error(
+        "JS callback parameter annotations cannot cast dynamic callback arguments; use reflection or an explicit assertion inside the callback",
+      ),
+      arg.node ?? annotatedLambdas.get(arg.name)?.node,
+    );
+  }
 }
 
 function generatedForeignDeclsForOverrides(
@@ -83,21 +239,64 @@ function generatedForeignDeclsForOverrides(
   return generated;
 }
 
+function rememberDelayedLetRefs(
+  decl: Decl,
+  ffi: FfiElaboration,
+  valueRefs: Map<string, JsTypeRef>,
+) {
+  if (decl.kind !== "LetDecl") return;
+  for (const binding of decl.bindings) {
+    if (binding.pattern.kind !== "PVar") continue;
+    if (binding.annotation?.kind === "TName" && binding.annotation.name === "Js.Object") continue;
+    const ref = resultRefForExpr(binding.value, ffi.bindings, valueRefs, ffi.passThroughRefs);
+    if (ref) valueRefs.set(binding.pattern.name, ref);
+  }
+}
+
 function resolveDelayedDecl(
   decl: Decl,
   ffi: FfiElaboration,
   result: InferResult,
   selected: Set<string>,
   options: ResolveOptions,
+  valueRefs: Map<string, JsTypeRef>,
 ): Decl {
   if (decl.kind !== "LetDecl") return decl;
   return {
     ...decl,
-    bindings: decl.bindings.map((binding) => ({
-      ...binding,
-      value: resolveDelayedExpr(binding.value, ffi, result, selected, options),
-    })),
+    bindings: decl.bindings.map((binding) => {
+      const bindingValueRefs = delayedValueRefsForBinding(binding, ffi, valueRefs);
+      return {
+        ...binding,
+        value: resolveDelayedExpr(binding.value, ffi, result, selected, options, bindingValueRefs),
+      };
+    }),
   };
+}
+
+function delayedValueRefsForBinding(
+  binding: Extract<Decl, { kind: "LetDecl" }>["bindings"][number],
+  ffi: FfiElaboration,
+  valueRefs: Map<string, JsTypeRef>,
+): Map<string, JsTypeRef> {
+  if (binding.pattern.kind !== "PVar" || binding.value.kind !== "Lambda") return valueRefs;
+  const callbackRefs = ffi.namedCallbackRefs.get(binding.pattern.name);
+  if (!callbackRefs?.length) return valueRefs;
+  const localValueRefs = new Map(valueRefs);
+  rememberLambdaParamRefs(binding.value.params, callbackRefs, localValueRefs);
+  return localValueRefs;
+}
+
+function rememberLambdaParamRefs(
+  params: Param[],
+  refs: JsTypeRef[],
+  valueRefs: Map<string, JsTypeRef>,
+) {
+  for (let index = 0; index < params.length; index++) {
+    const binder = paramBinder(params[index]);
+    const ref = refs[index];
+    if (binder && ref) valueRefs.set(binder, ref);
+  }
 }
 
 function resolveDelayedExpr(
@@ -106,29 +305,34 @@ function resolveDelayedExpr(
   result: InferResult,
   selected: Set<string>,
   options: ResolveOptions,
+  valueRefs: Map<string, JsTypeRef>,
 ): Expr {
   switch (expr.kind) {
     case "FfiGet":
-      return resolveDelayedFfiGet(expr, ffi, result, selected, options);
+      return resolveDelayedFfiGet(expr, ffi, result, selected, options, valueRefs);
     case "FfiCall":
-      return resolveDelayedFfiCall(expr, ffi, result, selected, options);
+      return resolveDelayedFfiCall(expr, ffi, result, selected, options, valueRefs);
     case "Call":
       return {
         ...expr,
-        callee: resolveDelayedExpr(expr.callee, ffi, result, selected, options),
-        args: expr.args.map((arg) => resolveDelayedExpr(arg, ffi, result, selected, options)),
+        callee: resolveDelayedExpr(expr.callee, ffi, result, selected, options, valueRefs),
+        args: expr.args.map((arg) =>
+          resolveDelayedExpr(arg, ffi, result, selected, options, valueRefs)
+        ),
       };
     case "Tuple":
       return {
         ...expr,
-        items: expr.items.map((item) => resolveDelayedExpr(item, ffi, result, selected, options)),
+        items: expr.items.map((item) =>
+          resolveDelayedExpr(item, ffi, result, selected, options, valueRefs)
+        ),
       };
     case "Record":
       return {
         ...expr,
         fields: expr.fields.map((field) => ({
           ...field,
-          value: resolveDelayedExpr(field.value, ffi, result, selected, options),
+          value: resolveDelayedExpr(field.value, ffi, result, selected, options, valueRefs),
         })),
       };
     case "JsonObject":
@@ -136,52 +340,74 @@ function resolveDelayedExpr(
         ...expr,
         fields: expr.fields.map((field) => ({
           ...field,
-          value: resolveDelayedExpr(field.value, ffi, result, selected, options),
+          value: resolveDelayedExpr(field.value, ffi, result, selected, options, valueRefs),
         })),
       };
     case "JsonArray":
       return {
         ...expr,
-        items: expr.items.map((item) => resolveDelayedExpr(item, ffi, result, selected, options)),
+        items: expr.items.map((item) =>
+          resolveDelayedExpr(item, ffi, result, selected, options, valueRefs)
+        ),
       };
     case "Lambda":
-      return { ...expr, body: resolveDelayedExpr(expr.body, ffi, result, selected, options) };
+      return {
+        ...expr,
+        body: resolveDelayedExpr(expr.body, ffi, result, selected, options, new Map(valueRefs)),
+      };
     case "If":
       return {
         ...expr,
-        cond: resolveDelayedExpr(expr.cond, ffi, result, selected, options),
-        thenExpr: resolveDelayedExpr(expr.thenExpr, ffi, result, selected, options),
-        elseExpr: resolveDelayedExpr(expr.elseExpr, ffi, result, selected, options),
+        cond: resolveDelayedExpr(expr.cond, ffi, result, selected, options, valueRefs),
+        thenExpr: resolveDelayedExpr(expr.thenExpr, ffi, result, selected, options, valueRefs),
+        elseExpr: resolveDelayedExpr(expr.elseExpr, ffi, result, selected, options, valueRefs),
       };
     case "Match":
       return {
         ...expr,
-        value: resolveDelayedExpr(expr.value, ffi, result, selected, options),
+        value: resolveDelayedExpr(expr.value, ffi, result, selected, options, valueRefs),
         arms: expr.arms.map((arm) => ({
           ...arm,
-          body: resolveDelayedExpr(arm.body, ffi, result, selected, options),
+          body: resolveDelayedExpr(arm.body, ffi, result, selected, options, new Map(valueRefs)),
         })),
       };
     case "Panic":
-      return { ...expr, message: resolveDelayedExpr(expr.message, ffi, result, selected, options) };
-    case "Block":
       return {
         ...expr,
-        items: expr.items.map((item) =>
-          isDecl(item)
-            ? resolveDelayedDecl(item, ffi, result, selected, options)
-            : resolveDelayedExpr(item, ffi, result, selected, options)
-        ),
-        result: resolveDelayedExpr(expr.result, ffi, result, selected, options),
+        message: resolveDelayedExpr(expr.message, ffi, result, selected, options, valueRefs),
       };
+    case "Block": {
+      const localValueRefs = new Map(valueRefs);
+      const items = expr.items.map((item) => {
+        const resolved = isDecl(item)
+          ? resolveDelayedDecl(item, ffi, result, selected, options, localValueRefs)
+          : resolveDelayedExpr(item, ffi, result, selected, options, localValueRefs);
+        if (isDecl(resolved)) rememberDelayedLetRefs(resolved, ffi, localValueRefs);
+        return resolved;
+      });
+      return {
+        ...expr,
+        items,
+        result: resolveDelayedExpr(expr.result, ffi, result, selected, options, localValueRefs),
+      };
+    }
     case "Binary":
       return {
         ...expr,
-        left: resolveDelayedExpr(expr.left, ffi, result, selected, options),
-        right: resolveDelayedExpr(expr.right, ffi, result, selected, options),
+        left: resolveDelayedExpr(expr.left, ffi, result, selected, options, valueRefs),
+        right: resolveDelayedExpr(expr.right, ffi, result, selected, options, valueRefs),
       };
     case "Unary":
-      return { ...expr, value: resolveDelayedExpr(expr.value, ffi, result, selected, options) };
+      return {
+        ...expr,
+        value: resolveDelayedExpr(expr.value, ffi, result, selected, options, valueRefs),
+      };
+    case "Pipe":
+      return {
+        ...expr,
+        left: resolveDelayedExpr(expr.left, ffi, result, selected, options, valueRefs),
+        right: resolveDelayedExpr(expr.right, ffi, result, selected, options, valueRefs),
+      };
     default:
       return expr;
   }
@@ -193,9 +419,10 @@ function resolveDelayedFfiGet(
   result: InferResult,
   selected: Set<string>,
   options: ResolveOptions,
+  valueRefs: Map<string, JsTypeRef>,
 ): Expr {
   const receiverType = options.receiverTypes?.get(expr) ?? result.types.get(expr.receiver);
-  const receiver = resolveDelayedExpr(expr.receiver, ffi, result, selected, options);
+  const receiver = resolveDelayedExpr(expr.receiver, ffi, result, selected, options, valueRefs);
   const foreignTypeRefs = foreignTypeRefLookup(ffi.foreignTypeRefs, options.foreignTypeRefs);
   const foreign = receiverType ? foreignReceiver(receiverType, foreignTypeRefs) : undefined;
   if (foreign) {
@@ -215,6 +442,34 @@ function resolveDelayedFfiGet(
       new Error(`cannot resolve JS FFI property ${expr.path.join(".")} on ${foreign.ref.key}`),
       expr.node,
     );
+  }
+  const array = jsArrayReceiver(receiverType);
+  const arrayMember = array ? jsArrayMember(array, expr.path) : undefined;
+  if (array && arrayMember) {
+    return materializeReceiverProperty(
+      receiver,
+      expr.path,
+      array.type,
+      arrayMember,
+      `__dynamic_array.${typeExprKey(array.type)}.${expr.path.join(".")}`,
+      ffi.bindings,
+      selected,
+    );
+  }
+  const expressionRef = expressionRefForReceiver(expr.receiver, receiver, ffi, valueRefs);
+  if (expressionRef) {
+    const member = jsRefMember(expressionRef, expr.path);
+    if (member) {
+      return materializeReceiverProperty(
+        receiver,
+        expr.path,
+        receiverTypeForRef(expressionRef),
+        member,
+        `__receiver.${expressionRef.key}.${expr.path.join(".")}`,
+        ffi.bindings,
+        selected,
+      );
+    }
   }
   if (!receiverType || !isJsObjectTy(receiverType)) {
     throw diagnosticError(
@@ -243,9 +498,10 @@ function resolveDelayedFfiCall(
   result: InferResult,
   selected: Set<string>,
   options: ResolveOptions,
+  valueRefs: Map<string, JsTypeRef>,
 ): Expr {
   const receiverType = options.receiverTypes?.get(expr) ?? result.types.get(expr.receiver);
-  const receiver = resolveDelayedExpr(expr.receiver, ffi, result, selected, options);
+  const receiver = resolveDelayedExpr(expr.receiver, ffi, result, selected, options, valueRefs);
   const foreignTypeRefs = foreignTypeRefLookup(ffi.foreignTypeRefs, options.foreignTypeRefs);
   const foreign = receiverType ? foreignReceiver(receiverType, foreignTypeRefs) : undefined;
   if (foreign) {
@@ -265,12 +521,52 @@ function resolveDelayedFfiCall(
         result,
         selected,
         options,
+        valueRefs,
       );
     }
     throw diagnosticError(
       new Error(`cannot resolve JS FFI method ${expr.path.join(".")} on ${foreign.ref.key}`),
       expr.node,
     );
+  }
+  const array = jsArrayReceiver(receiverType);
+  const arrayMember = array ? jsArrayMember(array, expr.path) : undefined;
+  if (array && arrayMember) {
+    return materializeReceiverCall(
+      receiver,
+      expr.path,
+      expr.args,
+      array.type,
+      arrayMember,
+      `__dynamic_array.${typeExprKey(array.type)}.${expr.path.join(".")}`,
+      ffi,
+      result,
+      selected,
+      options,
+      valueRefs,
+    );
+  }
+  const expressionRef = expressionRefForReceiver(expr.receiver, receiver, ffi, valueRefs);
+  if (expressionRef) {
+    const callMember = jsRefCallMember(expressionRef, expr.path, expr.args.map(callArgHint));
+    const member = callMember ?? jsRefMember(expressionRef, expr.path);
+    if (member) {
+      return materializeReceiverCall(
+        receiver,
+        expr.path,
+        expr.args,
+        receiverTypeForRef(expressionRef),
+        member,
+        `__receiver.${expressionRef.key}.${expr.path.join(".")}${
+          callMember ? `(${callHintKey(expr.args)})` : ""
+        }`,
+        ffi,
+        result,
+        selected,
+        options,
+        valueRefs,
+      );
+    }
   }
   if (!receiverType || !isJsObjectTy(receiverType)) {
     throw diagnosticError(
@@ -289,19 +585,120 @@ function resolveDelayedFfiCall(
     name("Js.Object"),
     {
       name: expr.path.at(-1)!,
-      type: fn([{ kind: "TVar", name: "a" }], { kind: "TVar", name: "b" }),
+      type: fn(expr.args.map(dynamicReceiverArgType), { kind: "TVar", name: "b" }),
     },
     `__dynamic.${expr.path.join(".")}`,
     ffi,
     result,
     selected,
     options,
+    valueRefs,
   );
 }
 
 function isJsObjectTy(type: Ty): boolean {
   const target = prune(type);
   return target.tag === "named" && target.name === "Js.Object";
+}
+
+function jsArrayReceiver(type: Ty | undefined): { element: TypeExpr; type: TypeExpr } | undefined {
+  if (!type) return undefined;
+  const target = prune(type);
+  if (target.tag !== "named" || target.name !== "Js.Array" || target.args.length !== 1) {
+    return undefined;
+  }
+  const element = tyToTypeExpr(target.args[0]);
+  return { element, type: nameArgs("Js.Array", [element]) };
+}
+
+function jsArrayMember(
+  array: { element: TypeExpr; type: TypeExpr },
+  path: string[],
+): JsMemberType | undefined {
+  if (path.length !== 1) return undefined;
+  const member = path[0];
+  if (member === "length") return { name: member, type: name("Number") };
+  if (member === "join") {
+    return {
+      name: member,
+      type: fn([name("String")], name("String")),
+      variants: [
+        { type: fn([], name("String")) },
+        { type: fn([name("String")], name("String")) },
+      ],
+    };
+  }
+  if (member === "map") {
+    const mapped = tvar("mapped");
+    return {
+      name: member,
+      type: fn(
+        [fn([array.element, name("Number"), array.type], mapped)],
+        nameArgs("Js.Array", [mapped]),
+      ),
+    };
+  }
+  return undefined;
+}
+
+function tyToTypeExpr(type: Ty): TypeExpr {
+  const target = prune(type);
+  switch (target.tag) {
+    case "prim":
+      return name(target.name);
+    case "var":
+      return tvar(target.name ?? `t${target.id}`);
+    case "named":
+      return nameArgs(target.name, target.args.map(tyToTypeExpr));
+    case "tuple":
+      return { kind: "TTuple", items: target.items.map(tyToTypeExpr) };
+    case "fn":
+      return {
+        kind: "TFn",
+        params: target.params.map(tyToTypeExpr),
+        result: tyToTypeExpr(target.result),
+      };
+  }
+}
+
+function typeExprKey(type: TypeExpr): string {
+  switch (type.kind) {
+    case "TName":
+      return type.args.length ? `${type.name}<${type.args.map(typeExprKey).join(",")}>` : type.name;
+    case "TVar":
+      return `'${type.name}`;
+    case "TTuple":
+      return `(${type.items.map(typeExprKey).join(",")})`;
+    case "TFn":
+      return `(${type.params.map(typeExprKey).join(",")})->${typeExprKey(type.result)}`;
+  }
+}
+
+function expressionRefForReceiver(
+  original: Expr,
+  resolved: Expr,
+  ffi: FfiElaboration,
+  valueRefs: Map<string, JsTypeRef>,
+): JsTypeRef | undefined {
+  if (original.kind === "Var") {
+    const ref = valueRefs.get(original.name);
+    if (ref) return ref;
+  }
+  if (resolved.kind === "Var") {
+    const ref = valueRefs.get(resolved.name);
+    if (ref) return ref;
+  }
+  return ffi.expressionRefs.get(original) ??
+    ffi.expressionRefs.get(resolved) ??
+    resultRefForExpr(resolved, ffi.bindings, valueRefs, ffi.passThroughRefs);
+}
+
+function receiverTypeForRef(ref: JsTypeRef): TypeExpr {
+  const type = jsRefTypeExpr(ref);
+  if (type?.kind === "TName" && type.name === "Js.Value" && type.args.length === 0) {
+    return name("Js.Object");
+  }
+  return type ?? name("Js.Object");
 }
 
 function foreignTypeRefLookup(
@@ -319,6 +716,15 @@ function foreignReceiver(
   foreignTypeRefs: Map<string, JsTypeRef>,
 ): { ref: JsTypeRef; type: TypeExpr } | undefined {
   const target = prune(type);
+  if (
+    target.tag === "prim" &&
+    (target.name === "String" || target.name === "Number" || target.name === "Bool")
+  ) {
+    return {
+      ref: jsPrimitiveValueRef(target.name),
+      type: { kind: "TName", name: target.name, args: [] },
+    };
+  }
   if (target.tag !== "named" || !(target.foreign || foreignTypeRefs.has(target.name))) {
     return undefined;
   }
@@ -373,6 +779,7 @@ function materializeReceiverCall(
   result: InferResult,
   selected: Set<string>,
   options: ResolveOptions,
+  valueRefs: Map<string, JsTypeRef>,
 ): Expr {
   addVariants(
     ffi.bindings,
@@ -399,7 +806,7 @@ function materializeReceiverCall(
     args: [
       receiver,
       ...args.map((arg, index) =>
-        resolveDelayedCallArg(arg, index + 1, variant, ffi, result, selected, options)
+        resolveDelayedCallArg(arg, index + 1, variant, ffi, result, selected, options, valueRefs)
       ),
     ],
   };
@@ -413,6 +820,7 @@ function resolveDelayedCallArg(
   result: InferResult,
   selected: Set<string>,
   options: ResolveOptions,
+  valueRefs: Map<string, JsTypeRef>,
 ): Expr {
   const callbackRefs = variant.callbackParamRefs?.find((item) => item.argIndex === argIndex);
   const rewritten = rewriteExprCalls(
@@ -424,5 +832,5 @@ function resolveDelayedCallArg(
     new Map(),
     ffi.foreignTypeRefs,
   );
-  return resolveDelayedExpr(rewritten, ffi, result, selected, options);
+  return resolveDelayedExpr(rewritten, ffi, result, selected, options, new Map(valueRefs));
 }

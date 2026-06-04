@@ -153,6 +153,18 @@ Deno.test("FFI elaboration reflects global value constructors and properties", a
   );
 });
 
+Deno.test("FFI elaboration reflects callable root globals", async () => {
+  const module = await parse(`
+    from js.global import { fetch };
+    let response = fetch("https://example.test");
+  `);
+
+  const ffi = prepareFfiElaboration(module);
+
+  assertEquals(ffi.bindings.get("fetch")?.variants[0].memberName, "fetch");
+  assertEquals(ffi.bindings.get("fetch")?.variants[0].target.kind, "JsGlobalRoot");
+});
+
 Deno.test("FFI elaboration reflects callback parameter refs", async () => {
   const module = await parse(`
     from js.global("Deno") import { serve };
@@ -205,7 +217,7 @@ Deno.test("FFI elaboration rewrites annotated Js.Object property reads", async (
 Deno.test("FFI elaboration rewrites annotated primitive receiver methods", async () => {
   const module = await parse(`
     let hex = (byte: Number) => {
-      byte.toString(Some(16))
+      byte.toString(16)
     };
   `);
 

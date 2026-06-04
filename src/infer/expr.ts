@@ -12,7 +12,9 @@ import {
   fn,
   fresh,
   instantiateWithObligations,
+  named,
   NumberTy,
+  prune,
   StringTy,
   tuple,
   type Ty,
@@ -154,7 +156,7 @@ function inferExprInner(
       t = jsonValueTy(typeEnv);
       break;
     case "FfiGet": {
-      inferExpr(
+      const receiver = inferExpr(
         expr.receiver,
         env,
         typeEnv,
@@ -165,11 +167,11 @@ function inferExprInner(
         provenance,
         ffiObligations,
       );
-      t = ffiGetResultTy(typeEnv, fresh());
+      t = ffiGetResultTy(typeEnv, jsArrayFfiGetValue(typeEnv, receiver, expr.path) ?? fresh());
       break;
     }
     case "FfiCall": {
-      inferExpr(
+      const receiver = inferExpr(
         expr.receiver,
         env,
         typeEnv,
@@ -180,10 +182,10 @@ function inferExprInner(
         provenance,
         ffiObligations,
       );
-      expr.args.forEach((arg) =>
+      const args = expr.args.map((arg) =>
         inferExpr(arg, env, typeEnv, adts, types, warnings, diagnostics, provenance, ffiObligations)
       );
-      t = ffiGetResultTy(typeEnv, fresh());
+      t = ffiGetResultTy(typeEnv, jsArrayFfiCallValue(typeEnv, receiver, expr.path, args) ?? fresh());
       break;
     }
     case "Lambda": {
@@ -370,4 +372,39 @@ function inferExprInner(
   }
   types.set(expr, t);
   return t;
+}
+
+function jsArrayFfiGetValue(typeEnv: TypeEnv, receiver: Ty, path: string[]): Ty | undefined {
+  const array = jsArrayElement(typeEnv, receiver);
+  if (!array || path.length !== 1) return undefined;
+  if (path[0] === "length") return NumberTy;
+  return undefined;
+}
+
+function jsArrayFfiCallValue(
+  typeEnv: TypeEnv,
+  receiver: Ty,
+  path: string[],
+  args: Ty[],
+): Ty | undefined {
+  const element = jsArrayElement(typeEnv, receiver);
+  if (!element || path.length !== 1) return undefined;
+  const member = path[0];
+  if (member === "join") return StringTy;
+  if (member !== "map" || args.length !== 1) return undefined;
+  const mapped = fresh("mapped");
+  constrain(args[0], fn([tuple([element, NumberTy, jsArrayTy(typeEnv, element)])], mapped));
+  return jsArrayTy(typeEnv, mapped);
+}
+
+function jsArrayElement(typeEnv: TypeEnv, receiver: Ty): Ty | undefined {
+  const target = prune(receiver);
+  if (target.tag !== "named" || target.id !== typeEnv.get("Js.Array")?.id) return undefined;
+  return target.args[0];
+}
+
+function jsArrayTy(typeEnv: TypeEnv, element: Ty): Ty {
+  const info = typeEnv.get("Js.Array");
+  if (!info) throw new Error("unknown type Js.Array");
+  return named(info, [element]);
 }

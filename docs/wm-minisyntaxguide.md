@@ -902,7 +902,7 @@ let right = "Hello" ++ " " ++ "World";
 **Not supported yet in current `wm-mini`.** Prefer annotations on `let` bindings or lambda
 parameters for now.
 
-Use `as` to assert an expression has a specific type:
+Use `as` to ask the typechecker to verify that an expression already has a specific type:
 
 ```workman
 let x = someValue as Int;
@@ -911,6 +911,11 @@ let result = compute() as Option<String>;
 -- Useful for disambiguating polymorphic expressions
 let empty = [] as List<Int>;
 ```
+
+`as` is not a runtime cast. It must not allow unsafe conversions such as `number as String`, and it
+must not be used to turn dynamic JS/JSON data into a Workman record or primitive. Dynamic data needs
+an explicit runtime validation function that returns a typed value, such as a future whole-shape JSON
+assertion.
 
 ### 12. Panic for Unrecoverable Errors
 

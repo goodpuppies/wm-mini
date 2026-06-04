@@ -180,6 +180,14 @@ function delayedReceiverOverrides(
       const moduleOverrides = overrides.get(path) ?? new Map<Expr, Ty>();
       const existing = moduleOverrides.get(obligation.source);
       if (existing && show(prune(existing)) !== show(receiver)) {
+        if (isUnresolvedTypeVar(receiver)) {
+          continue;
+        }
+        if (isUnresolvedTypeVar(existing)) {
+          moduleOverrides.set(obligation.source, receiver);
+          overrides.set(path, moduleOverrides);
+          continue;
+        }
         throw new Error(
           `conflicting JS FFI receiver types for ${obligation.path.join(".")}: ${
             show(prune(existing))
@@ -191,6 +199,10 @@ function delayedReceiverOverrides(
     }
   }
   return overrides;
+}
+
+function isUnresolvedTypeVar(type: Ty): boolean {
+  return prune(type).tag === "var";
 }
 
 function collectFfiGetSources(
@@ -266,6 +278,10 @@ function collectFfiGetExprs(
       return;
     case "Unary":
       collectFfiGetExprs(expr.value, visit);
+      return;
+    case "Pipe":
+      collectFfiGetExprs(expr.left, visit);
+      collectFfiGetExprs(expr.right, visit);
       return;
   }
 }

@@ -11,6 +11,7 @@ type RewriteExpr = (
   resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
+  passThroughRefs?: Set<string>,
 ) => Expr;
 
 export function rewriteDeclCalls(
@@ -21,6 +22,7 @@ export function rewriteDeclCalls(
   resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
+  passThroughRefs: Set<string>,
   rewriteExpr: RewriteExpr,
 ): Decl {
   if (decl.kind !== "LetDecl") return decl;
@@ -36,6 +38,7 @@ export function rewriteDeclCalls(
         resultRefs,
         objectAccess,
         importedTypeRefs,
+        passThroughRefs,
       ),
     })),
   };

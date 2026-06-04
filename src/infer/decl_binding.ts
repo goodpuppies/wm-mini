@@ -38,10 +38,15 @@ export function generalizeBinding(env: Env, type: Ty, value: Expr): Scheme {
     : { vars: [], type, constraints: [], status: "value" };
 }
 
-export function withFfiObligations(scheme: Scheme, value: Expr, types: Map<Expr, Ty>): Scheme {
-  const obligations = collectFfiObligations(value, types).filter((obligation) =>
-    obligationMentionsSchemeVar(obligation, scheme)
-  );
+export function withFfiObligations(
+  scheme: Scheme,
+  value: Expr,
+  types: Map<Expr, Ty>,
+  inferredObligations: FfiObligation[] = [],
+): Scheme {
+  const obligations = [...collectFfiObligations(value, types), ...inferredObligations].filter((
+    obligation,
+  ) => obligationMentionsSchemeVar(obligation, scheme));
   return obligations.length ? { ...scheme, ffiObligations: obligations } : scheme;
 }
 
@@ -146,6 +151,10 @@ function visitFfiObligations(expr: Expr, types: Map<Expr, Ty>, obligations: FfiO
     case "Unary":
       visitFfiObligations(expr.value, types, obligations);
       return;
+    case "Pipe":
+      visitFfiObligations(expr.left, types, obligations);
+      visitFfiObligations(expr.right, types, obligations);
+      return;
   }
 }
 
@@ -205,9 +214,10 @@ export function inferBinding(
   annotationVars: TypeVarScope,
   provenance: TypeProvenance,
   ffiObligations: FfiObligation[],
-): { bound: Map<string, Ty>; refutable: boolean } {
+): { bound: Map<string, Ty>; refutable: boolean; ffiObligations: FfiObligation[] } {
   try {
     const annotated = b.annotation ? typeFromAst(b.annotation, typeEnv, annotationVars) : undefined;
+    const bindingFfiObligations: FfiObligation[] = [];
     const t = annotated && b.value.kind === "Record"
       ? inferRecordExpr(
         b.value,
@@ -222,7 +232,7 @@ export function inferBinding(
             warnings,
             diagnostics,
             provenance,
-            ffiObligations,
+            bindingFfiObligations,
           ),
         annotated,
       )
@@ -235,16 +245,108 @@ export function inferBinding(
         warnings,
         diagnostics,
         provenance,
-        ffiObligations,
+        bindingFfiObligations,
       );
+    ffiObligations.push(...bindingFfiObligations);
+    if (annotated && dynamicFfiWithoutJsonAssert(b.value, env)) {
+      throw new Error(
+        "type annotations cannot cast dynamic JS/JSON values; use Json.assert for an explicit dynamic shape assertion",
+      );
+    }
     if (annotated) constrainAt(t, annotated, resultExpr(b.value));
     const bound = new Map<string, Ty>();
     inferBindingPattern(b.pattern, t, env, typeEnv, bound);
     const refutable = !isVectorExhaustive([[b.pattern]], [t], typeEnv, adts);
-    return { bound, refutable };
+    return { bound, refutable, ffiObligations: bindingFfiObligations };
   } catch (error) {
     throw diagnosticError(error, b.node);
   }
+}
+
+function dynamicFfiWithoutJsonAssert(expr: Expr, env: Env): boolean {
+  let hasDynamicFfi = false;
+  let hasJsonAssert = false;
+  const visit = (node: Expr) => {
+    if (node.kind === "Call" && node.callee.kind === "Var") {
+      if (node.callee.name === "Json.assert") hasJsonAssert = true;
+      const scheme = env.get(node.callee.name);
+      if (scheme?.jsImport && node.callee.name.includes("__dynamic")) hasDynamicFfi = true;
+    }
+    if (node.kind === "Pipe" && node.right.kind === "Var" && node.right.name === "Json.assert") {
+      hasJsonAssert = true;
+    }
+    if (
+      node.kind === "Pipe" && node.right.kind === "Call" && node.right.callee.kind === "Var" &&
+      node.right.callee.name === "Json.assert"
+    ) {
+      hasJsonAssert = true;
+    }
+    switch (node.kind) {
+      case "Tuple":
+      case "JsonArray":
+        node.items.forEach(visit);
+        return;
+      case "Record":
+      case "JsonObject":
+        node.fields.forEach((field) => visit(field.value));
+        return;
+      case "FfiGet":
+        hasDynamicFfi = true;
+        visit(node.receiver);
+        return;
+      case "FfiCall":
+        hasDynamicFfi = true;
+        visit(node.receiver);
+        node.args.forEach(visit);
+        return;
+      case "Lambda":
+        visit(node.body);
+        return;
+      case "Call":
+        visit(node.callee);
+        node.args.forEach(visit);
+        return;
+      case "If":
+        visit(node.cond);
+        visit(node.thenExpr);
+        visit(node.elseExpr);
+        return;
+      case "Match":
+        visit(node.value);
+        node.arms.forEach((arm) => visit(arm.body));
+        return;
+      case "Panic":
+        visit(node.message);
+        return;
+      case "Block":
+        for (const item of node.items) {
+          if (item.kind === "LetDecl") {
+            item.bindings.forEach((binding) => visit(binding.value));
+          } else if (
+            item.kind !== "ImportDecl" && item.kind !== "JsImportDecl" &&
+            item.kind !== "ForeignTypeDecl" && item.kind !== "RecordDecl" &&
+            item.kind !== "TypeDecl"
+          ) {
+            visit(item);
+          }
+        }
+        visit(node.result);
+        return;
+      case "Binary":
+        visit(node.left);
+        visit(node.right);
+        return;
+      case "Unary":
+        visit(node.value);
+        return;
+      case "Pipe":
+        visit(node.left);
+        visit(node.right);
+        return;
+    }
+  };
+  visit(expr);
+  return hasDynamicFfi && !hasJsonAssert;
 }
 
 export function constrainBinding(

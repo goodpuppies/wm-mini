@@ -5,6 +5,7 @@ import {
   type FfiObligation,
   fn,
   fresh,
+  instantiateRecordFields,
   named,
   prune,
   quoteType,
@@ -113,14 +114,27 @@ export function ffiGetResultTy(typeEnv: TypeEnv, value: Ty): Ty {
 function jsImportActualArg(expected: Ty, actual: Ty, typeEnv: TypeEnv): Ty {
   const expectedType = prune(expected);
   const actualType = prune(actual);
+  if (isJsArrayType(expectedType, typeEnv) && isJsArrayType(actualType, typeEnv)) {
+    return actualType;
+  }
+  if (
+    isJsArrayType(expectedType, typeEnv) &&
+    (isJsValueType(actualType, typeEnv) || isJsObjectLikeType(actualType, typeEnv))
+  ) {
+    return expectedType;
+  }
   if (isJsObjectType(expectedType, typeEnv) && isForeignObjectType(actualType, typeEnv)) {
     const jsObject = typeEnv.get("Js.Object");
     if (!jsObject) throw new Error("unknown type Js.Object");
     return named(jsObject);
   }
+  if (isForeignObjectType(expectedType, typeEnv) && isJsObjectType(actualType, typeEnv)) {
+    return expectedType;
+  }
   if (
     isJsValueType(expectedType, typeEnv) &&
-    (isJsObjectLikeType(actualType, typeEnv) || isJsPrimitiveType(actualType))
+    (isJsObjectLikeType(actualType, typeEnv) || isJsPrimitiveType(actualType) ||
+      actualType.tag === "fn")
   ) {
     const jsValue = typeEnv.get("Js.Value");
     if (!jsValue) throw new Error("unknown type Js.Value");
@@ -161,7 +175,8 @@ function isForeignObjectType(type: Ty, typeEnv: TypeEnv): boolean {
 
 function isJsObjectLikeType(type: Ty, typeEnv: TypeEnv): boolean {
   const t = prune(type);
-  return isJsObjectType(t, typeEnv) || isForeignObjectType(t, typeEnv);
+  return isJsObjectType(t, typeEnv) || isJsArrayType(t, typeEnv) ||
+    isForeignObjectType(t, typeEnv) || isRecordType(t, typeEnv);
 }
 
 function isJsObjectType(type: Ty, typeEnv: TypeEnv): boolean {
@@ -172,6 +187,16 @@ function isJsObjectType(type: Ty, typeEnv: TypeEnv): boolean {
 function isJsValueType(type: Ty, typeEnv: TypeEnv): boolean {
   const t = prune(type);
   return t.tag === "named" && t.id === typeEnv.get("Js.Value")?.id;
+}
+
+function isJsArrayType(type: Ty, typeEnv: TypeEnv): boolean {
+  const t = prune(type);
+  return t.tag === "named" && t.id === typeEnv.get("Js.Array")?.id;
+}
+
+function isRecordType(type: Ty, typeEnv: TypeEnv): boolean {
+  const t = prune(type);
+  return t.tag === "named" && Boolean(typeEnv.get(t.name)?.recordFields);
 }
 
 function isJsPrimitiveType(type: Ty): boolean {
@@ -201,6 +226,17 @@ function assertJsCompatible(type: Ty, typeEnv: TypeEnv) {
       return;
     case "named":
       if (t.name === "Js.Value" || t.name === "Js.Object" || t.name === "Js.Error") return;
+      if (t.name === "Js.Array" && t.args.length === 1) {
+        assertJsCompatible(t.args[0], typeEnv);
+        return;
+      }
+      const record = typeEnv.get(t.name);
+      if (record?.recordFields) {
+        for (const field of instantiateRecordFields(record, t.args)) {
+          assertJsCompatible(field.type, typeEnv);
+        }
+        return;
+      }
       if (t.foreign || typeEnv.get(t.name)?.foreign) return;
       if (t.name === "Option" && t.args.length === 1) {
         assertJsCompatible(t.args[0], typeEnv);

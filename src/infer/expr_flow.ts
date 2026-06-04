@@ -1,11 +1,12 @@
 import type { Expr, Param } from "../ast.ts";
-import { type FrontendDiagnostic, warningDiagnostic } from "../diagnostics.ts";
+import { diagnosticError, type FrontendDiagnostic, warningDiagnostic } from "../diagnostics.ts";
 import {
   type Env,
   type FfiObligation,
   fn,
   fresh,
   instantiate,
+  prune,
   quoteType,
   type Scheme,
   tuple,
@@ -172,6 +173,12 @@ export function inferBinary(
     provenance,
     ffiObligations,
   );
+  rejectEscapedUnresolvedFfi(expr.left, left, typeEnv);
+  rejectEscapedUnresolvedFfi(expr.right, right, typeEnv);
+  if (expr.op === "++") {
+    rejectUnresolvedFfiResultOperand(expr.left, left, typeEnv);
+    rejectUnresolvedFfiResultOperand(expr.right, right, typeEnv);
+  }
   constrain(
     instantiate(op),
     fn([tuple([left, right])], result),
@@ -183,6 +190,51 @@ export function inferBinary(
   );
   if (expr.op === "==" || expr.op === "!=") assertEqualityType(left, typeEnv, adts);
   return result;
+}
+
+function rejectEscapedUnresolvedFfi(expr: Expr, type: Ty, typeEnv: TypeEnv) {
+  if (expr.kind !== "FfiGet" && expr.kind !== "FfiCall") return;
+  if (!isResultType(type, typeEnv)) return;
+  const kind = expr.kind === "FfiGet" ? "property" : "method";
+  throw diagnosticError(
+    new Error(
+      `cannot infer JS FFI ${kind} ${expr.path.join(".")} for unconstrained receiver; unresolved JS FFI access is not a generic value`,
+    ),
+    expr.node,
+  );
+}
+
+function rejectUnresolvedFfiResultOperand(expr: Expr, type: Ty, typeEnv: TypeEnv) {
+  const value = resultValueType(type, typeEnv);
+  if (!value || !containsTypeVar(value)) return;
+  throw diagnosticError(
+    new Error(
+      "cannot use unresolved JS FFI result as a String; unresolved JS FFI access is not a generic value",
+    ),
+    expr.node,
+  );
+}
+
+function isResultType(type: Ty, typeEnv: TypeEnv): boolean {
+  return !!resultValueType(type, typeEnv);
+}
+
+function resultValueType(type: Ty, typeEnv: TypeEnv): Ty | undefined {
+  const resolved = prune(type);
+  const result = typeEnv.get("Result");
+  if (!result || resolved.tag !== "named" || resolved.id !== result.id) return undefined;
+  return resolved.args[0];
+}
+
+function containsTypeVar(type: Ty): boolean {
+  const resolved = prune(type);
+  if (resolved.tag === "var") return true;
+  if (resolved.tag === "fn") {
+    return resolved.params.some(containsTypeVar) || containsTypeVar(resolved.result);
+  }
+  if (resolved.tag === "tuple") return resolved.items.some(containsTypeVar);
+  if (resolved.tag === "named") return resolved.args.some(containsTypeVar);
+  return false;
 }
 
 export function inferParam(

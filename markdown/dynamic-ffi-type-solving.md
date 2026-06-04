@@ -506,9 +506,53 @@ Rules:
 - Workman records and tuples may be representation-compatible with JS object/tuple-like shapes only
   at JS FFI boundaries.
 - JS property access is not an HM rule; it is an unresolved FFI operation resolved outside HM.
+- Type annotations and future `expr as Type` assertions are compile-time-only HM checks. They must
+  not act as dynamic casts from unknown JS/JSON data to a Workman type.
 - Final rewritten code must pass HM verification.
 
 This keeps the ML implementation honest while allowing JavaScript interop to remain ergonomic.
+
+## Dynamic JSON Shape Validation
+
+Dynamic JSON values are different from reflected JavaScript API values. TypeScript can reflect the
+shape of `Request.text()` or `Response.json()` callbacks, but a value returned by `JSON.parse` has no
+schema unless the program supplies one.
+
+Workman should not grow gradual per-property JSON typing as a language feature. Code like this is a
+runtime claim, not a compile-time type fact:
+
+```wm
+let id: String = commit :> .id :> try;
+let commits: Js.Object = payload :> .commits :> try;
+```
+
+Those annotations should not be treated as casts. If the receiver is only dynamic JSON, then a
+program needs an explicit runtime validation step before it can enter ordinary typed Workman code.
+The preferred direction is whole-shape validation:
+
+```wm
+record Commit = { id: String, message: String };
+record Repository = { full_name: String };
+record Pusher = { name: String };
+record PushPayload = {
+  repository: Repository,
+  pusher: Pusher,
+  commits: Js.Array<Commit>,
+};
+
+let payload: PushPayload = Json.assert(JSON.parse(bodyText)) :> try;
+let commits = payload.commits;
+```
+
+That assertion makes `payload.repository`, `payload.pusher`, and `payload.commits` typed values.
+It does not make later annotations on dynamic receiver results into casts; those should still be
+rejected unless there is another explicit assertion at that boundary.
+
+The exact implementation of `Json.assert` is future work. Since Workman is ML-shaped and does not
+have magic generic type application, the validator may need to be generated, derived, or supplied as
+an ordinary value-level function. The important rule is that it validates the whole expected shape at
+the dynamic boundary. It should not encourage interleaving lots of `Json.expectString`-style
+property checks through normal FP code.
 
 ## Implementation Checklist
 

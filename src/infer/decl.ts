@@ -310,6 +310,7 @@ function inferNonRecursiveLet(
           generalizeBinding(base, type, decl.bindings[i].value),
           decl.bindings[i].value,
           types,
+          result.ffiObligations,
         ),
         type,
         provenance,
@@ -355,6 +356,7 @@ function inferRecursiveLet(
       status: "value",
     })
   );
+  const bindingObligations = decl.bindings.map((): FfiObligation[] => []);
   decl.bindings.forEach((b, i) => {
     const name = (b.pattern as { name: string }).name;
     constrainBinding(
@@ -369,7 +371,7 @@ function inferRecursiveLet(
         warnings,
         diagnostics,
         provenance,
-        ffiObligations,
+        bindingObligations[i],
       ),
       b.value,
       b.pattern.node,
@@ -379,6 +381,7 @@ function inferRecursiveLet(
     if (b.annotation) {
       constrainAt(placeholders[i], typeFromAst(b.annotation, typeEnv, annotationVars), b.value);
     }
+    ffiObligations.push(...bindingObligations[i]);
   });
   decl.bindings.forEach((b, i) => {
     const scheme = withSchemeProvenance(
@@ -386,6 +389,7 @@ function inferRecursiveLet(
         { ...generalize(base, placeholders[i]), status: "value" as const },
         b.value,
         types,
+        bindingObligations[i],
       ),
       placeholders[i],
       provenance,

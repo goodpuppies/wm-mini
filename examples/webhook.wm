@@ -1,30 +1,37 @@
 from js.global import unsafe {
   AbortController,
   Array,
+  fetch,
   Response,
+  setTimeout,
   TextEncoder,
   URL,
   Uint8Array,
 };
 from js.global("Array") import unsafe { from as arrayFrom };
-from js.global import unsafe {
-  fetch: (String, Js.Value) => Js.Object,
-  setTimeout: ((Void) => Void, Number) => Js.Value,
-};
 from js.global import type { Request };
 from js.global("crypto.subtle") import unsafe {
-  importKey: (String, Js.Value, Js.Value, Bool, Js.Value) => Js.Object,
+  importKey,
   sign,
 } as subtle;
-from js.global("Deno") import unsafe { serve };
-from js.global("JSON") import unsafe {
+from js.global("Deno") import { serve };
+from js.global("JSON") import {
   parse: (String) => Js.Object,
   stringify: (Js.Value) => String,
 } as JSON;
-from js.global("console") import unsafe { error, log };
+from js.global("console") import { error, log };
 
 let githubSecret = "my-super-secret-key";
 let discordWebhook = "http://localhost:8080/mock-discord";
+
+record Repository = { full_name: String };
+record Pusher = { name: String };
+record Commit = { id: String, message: String };
+record PushPayload = {
+  repository: Repository,
+  pusher: Pusher,
+  commits: Js.Array<Commit>,
+};
 
 let try = (result) => {
   match(result) {
@@ -40,94 +47,95 @@ let okResponse = (body) => {
   })
 };
 
-let response = (body, status: Number) => {
+let response = (body, status) => {
   Response.new(body, JSON{ status: status })
 };
 
-let hexByte = (byte: Number, index, array) => {
-  try(byte.toString(Some(16)))
+let hexByte = (byte, index, array) => {
+  byte :> .toString(16) :> try :> .padStart(2, "0") :> try
 };
 
 let hexFromBuffer = (buffer) => {
   let bytes = Uint8Array.new(buffer);
-  let array: Js.Object = arrayFrom(bytes);
-  let hexParts: Js.Object = try(array.map(hexByte));
-  try(hexParts.join(""))
+  arrayFrom(bytes) :> .map(hexByte) :> try :> .join("") :> try
 };
 
 let encodeText = (encoder, text) => {
-  try(encoder.encode(Some(text)))
+  encoder :> .encode(text) :> try
 };
 
 let verifyGithubSignature = (signature, bodyText) => {
-  match(signature) {
-    Some(sig) => {
-      let encoder = TextEncoder.new();
-      let secretBytes = encodeText(encoder, githubSecret);
-      let bodyBytes = encodeText(encoder, bodyText);
-      let keyPromise: Js.Object = subtle.importKey(
-        "raw",
-        secretBytes,
-        JSON{ name: "HMAC", hash: "SHA-256" },
-        false,
-        JSON["sign", "verify"],
-      );
+  let encoder = TextEncoder.new();
+  let secretBytes = encodeText(encoder, githubSecret);
+  let bodyBytes = encodeText(encoder, bodyText);
+  let keyPromise = subtle.importKey(
+    "raw",
+    secretBytes,
+    JSON{ name: "HMAC", hash: "SHA-256" },
+    false,
+    JSON["sign", "verify"],
+  );
 
-      keyPromise.then((key) => {
-        let signaturePromise = subtle.sign("HMAC", key, bodyBytes);
-        signaturePromise.then((expectedBuffer) => {
-          let expectedHex = hexFromBuffer(expectedBuffer);
-          sig == "sha256=" ++ expectedHex;
-        });
-      });
-      true
-    },
-    None => {
-      false
-    },
-  }
+  keyPromise :> .then((key) => {
+    let signaturePromise = subtle.sign("HMAC", key, bodyBytes);
+    signaturePromise :> .then((expectedBuffer) => {
+      let expectedHex = hexFromBuffer(expectedBuffer);
+      signature == "sha256=" ++ expectedHex
+    }) :> try
+  }) :> try
 };
 
-let sendDiscordMessage = (content: String) => {
-  let sent: Js.Object = fetch(discordWebhook, JSON{
+let sendDiscordMessage = (content) => {
+  let sent = fetch(discordWebhook, JSON{
     method: "POST",
     headers: JSON{ "Content-Type": "application/json" },
     body: JSON.stringify(JSON{ content: content }),
   });
-  try(sent.catch((err) => {
+  sent :> .catch((err) => {
     error("Discord error:", err);
-  }))
+  }) :> try
 };
 
-let handleMockDiscord = (req: Request) => {
-  let bodyPromise: Js.Object = try(req.json());
-  try(bodyPromise.then((body: Js.Object) => {
-    let content = try(body.content);
+let handleMockDiscord = (req) => {
+  let bodyPromise = req :> .json() :> try;
+  bodyPromise :> .then((body) => {
+    let content = body :> .content :> try;
     log("\n[Discord Mock] Received message:\n", content, "\n");
     response("OK", 200)
-  }))
+  }) :> try
 };
 
-let handlePushPayload = (req, payload: Js.Object) => {
-  let repoName = try(payload.repository.full_name);
-  let pusherName = try(payload.pusher.name);
-  let commits: Js.Object = try(payload.commits);
-  let commitCount = try(commits.length);
+let formatCommit = (commit, index, array) => {
+  let shortId = commit.id :> .slice(0, 7) :> try;
+  let message = commit.message;
+  "- [" ++ shortId ++ "] " ++ message
+};
+
+let handlePushPayload = (req, payload) => {
+  let repoName = payload.repository.full_name;
+  let pusherName = payload.pusher.name;
+  let commits = payload.commits;
+  let commitCount = commits :> .length :> try;
 
   if (commitCount > 0) {
+    let commitParts = commits :> .map((commit, index, array) => {
+      formatCommit(commit, index, array)
+    }) :> try;
+    let commitList = commitParts :> .join("\n") :> try;
+    let commitCountText = commitCount :> .toString() :> try;
     sendDiscordMessage(
-      pusherName ++ " pushed commits to " ++ repoName,
+      pusherName ++ " pushed " ++ commitCountText ++ " commits to " ++ repoName ++ "\n" ++ commitList,
     );
   } else {
     void
   }
 };
 
-let handleRequest = (req: Request, info: Js.Object) => {
-  let method = try(req.method);
-  let urlText = try(req.url);
+let handleRequest = (req, info) => {
+  let method = req :> .method :> try;
+  let urlText = req :> .url :> try;
   let url = URL.new(urlText);
-  let path = try(url.pathname);
+  let path = url :> .pathname :> try;
 
   if (path == "/mock-discord") {
     handleMockDiscord(req)
@@ -135,27 +143,37 @@ let handleRequest = (req: Request, info: Js.Object) => {
     if (method != "POST") {
       response("Method Not Allowed", 405)
     } else {
-      let textPromise: Js.Object = try(req.text());
-      try(textPromise.then((bodyText: String) => {
-        let signature = try(req.headers.get("x-hub-signature-256"));
-        let authorized = verifyGithubSignature(signature, bodyText);
-        if (!authorized) {
-          error("[Server] Unauthorized request!");
-          response("Unauthorized", 401)
-        } else {
-          let payload = JSON.parse(bodyText);
-          let eventName = try(req.headers.get("x-github-event"));
-          match(eventName) {
-            Some("push") => {
-              handlePushPayload(req, payload);
-            },
-            _ => {
-              void
-            },
-          };
-          okResponse(JSON.stringify(JSON{ received: true }))
+      let textPromise = req :> .text() :> try;
+      textPromise :> .then((bodyText) => {
+        let signature = req :> .headers.get("x-hub-signature-256") :> try;
+        match(signature) {
+          Some(sig) => {
+            let authorizedPromise = verifyGithubSignature(sig, bodyText);
+            authorizedPromise :> .then((authorized) => {
+              if (!authorized) {
+                error("[Server] Unauthorized request!");
+                response("Unauthorized", 401)
+              } else {
+                let payload: PushPayload = JSON.parse(bodyText) :> Json.assert :> try;
+                let eventName = req :> .headers.get("x-github-event") :> try;
+                match(eventName) {
+                  Some("push") => {
+                    handlePushPayload(req, payload);
+                  },
+                  _ => {
+                    void
+                  },
+                };
+                okResponse(JSON.stringify(JSON{ received: true }))
+              }
+            }) :> try
+          },
+          None => {
+            error("[Server] Unauthorized request!");
+            response("Unauthorized", 401)
+          },
         }
-      }))
+      }) :> try
     }
   }
 };
@@ -175,7 +193,7 @@ let runSimulation = () => {
   };
   let payloadText = JSON.stringify(dummyPayload);
   let encoder = TextEncoder.new();
-  let keyPromise: Js.Object = subtle.importKey(
+  let keyPromise = subtle.importKey(
     "raw",
     encodeText(encoder, githubSecret),
     JSON{ name: "HMAC", hash: "SHA-256" },
@@ -188,7 +206,7 @@ let runSimulation = () => {
     try(signaturePromise.then((sigBuffer) => {
       let sigHex = hexFromBuffer(sigBuffer);
       log("Simulating incoming GitHub Webhook...");
-      let requestPromise: Js.Object = fetch("http://localhost:8080", JSON{
+      let requestPromise = fetch("http://localhost:8080", JSON{
         method: "POST",
         headers: JSON{
           "x-github-event": "push",
@@ -197,16 +215,16 @@ let runSimulation = () => {
         },
         body: payloadText,
       });
-      try(requestPromise.then((res: Js.Object) => {
-        let responsePromise: Js.Object = try(res.json());
-        try(responsePromise.then((responseBody: Js.Object) => {
+      requestPromise :> .then((res) => {
+        let responsePromise = res :> .json() :> try;
+        responsePromise :> .then((responseBody) => {
           log("[Simulation] Server responded with:", responseBody);
           setTimeout(() => {
             log("Shutting down server...");
             ac.abort();
           }, 100);
-        }));
-      }));
+        }) :> try;
+      }) :> try;
       void
     }));
     void

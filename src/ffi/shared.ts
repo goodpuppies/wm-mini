@@ -5,6 +5,9 @@ export type FfiElaboration = {
   module: Module;
   bindings: Map<string, FfiBinding>;
   foreignTypeRefs: Map<string, JsTypeRef>;
+  expressionRefs: Map<Expr, JsTypeRef>;
+  namedCallbackRefs: Map<string, JsTypeRef[]>;
+  passThroughRefs: Set<string>;
   selected: Set<string>;
 };
 
@@ -116,6 +119,26 @@ export function callHintKey(args: Expr[]): string {
     if (hint.kind === "function") return `fn/${hint.arity}`;
     return "?";
   }).join(",");
+}
+
+export function dynamicReceiverArgType(arg: Expr, index: number): TypeExpr {
+  if (arg.kind !== "Lambda") return { kind: "TVar", name: `a${index}` };
+  return {
+    kind: "TFn",
+    params: arg.params.map((_, paramIndex) => ({
+      kind: "TVar" as const,
+      name: `cb${index}_${paramIndex}`,
+    })),
+    result: { kind: "TVar", name: `cb${index}_result` },
+  };
+}
+
+export function tvar(name: string): TypeExpr {
+  return { kind: "TVar", name };
+}
+
+export function nameArgs(typeName: string, args: TypeExpr[]): TypeExpr {
+  return { kind: "TName", name: typeName, args };
 }
 
 export function prependReceiver(

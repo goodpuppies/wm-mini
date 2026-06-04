@@ -3,6 +3,7 @@ import { diagnosticError } from "../diagnostics.ts";
 import { jsRefCallMember, type JsTypeRef } from "./js_types.ts";
 import { collectFfiDecl, generatedJsImports, generatedTypeAliases } from "./imports.ts";
 import {
+  letBindingPassesThroughOkPayload,
   type ObjectAccess,
   objectReceiverCall,
   objectReceiverProperty,
@@ -11,6 +12,7 @@ import {
   rememberLetRefs,
   rememberObjectParams,
   rememberUnannotatedParams,
+  resultRefForExpr,
 } from "./receiver.ts";
 import { rewriteBlock, rewriteMatchArms } from "./rewrite_blocks.ts";
 import { rewriteDeclCalls } from "./rewrite_decl.ts";
@@ -24,7 +26,19 @@ import {
   selectVariant,
 } from "./shared.ts";
 
+let activeRecordFields = new Set<string>();
+
 export function prepareFfiElaboration(module: Module): FfiElaboration {
+  const previousRecordFields = activeRecordFields;
+  activeRecordFields = recordFieldNames(module);
+  try {
+    return prepareFfiElaborationInner(module);
+  } finally {
+    activeRecordFields = previousRecordFields;
+  }
+}
+
+function prepareFfiElaborationInner(module: Module): FfiElaboration {
   const bindings = new Map<string, FfiBinding>();
   const importedRefs = new Map<string, JsTypeRef>();
   const importedTypeRefs = new Map<string, JsTypeRef>();
@@ -36,10 +50,12 @@ export function prepareFfiElaboration(module: Module): FfiElaboration {
     if (decl.kind !== "JsImportDecl" || decl.typeOnly) continue;
     collectFfiDecl(bindings, importedRefs, importedTypeRefs, decl);
   }
+  collectReflectedCallbackTypeRefs(bindings, importedTypeRefs);
   const selected = new Set<string>();
   const refs = new Map(importedRefs);
   const resultRefs = new Map<string, JsTypeRef>();
   const objectAccess = new Map<string, ObjectAccess>();
+  const passThroughRefs = new Set<string>();
   const rewrittenDecls: Decl[] = [];
   for (const decl of module.decls) {
     if (decl.kind === "JsImportDecl") {
@@ -54,9 +70,19 @@ export function prepareFfiElaboration(module: Module): FfiElaboration {
       resultRefs,
       objectAccess,
       importedTypeRefs,
+      passThroughRefs,
       rewriteExprCalls,
     );
-    rememberLetRefs(rewritten, bindings, refs, resultRefs, objectAccess, importedTypeRefs);
+    for (const name of letBindingPassesThroughOkPayload(rewritten)) passThroughRefs.add(name);
+    rememberLetRefs(
+      rewritten,
+      bindings,
+      refs,
+      resultRefs,
+      objectAccess,
+      importedTypeRefs,
+      passThroughRefs,
+    );
     rewrittenDecls.push(rewritten);
   }
   const decls = [
@@ -66,7 +92,222 @@ export function prepareFfiElaboration(module: Module): FfiElaboration {
       decl.kind === "JsImportDecl" ? generatedJsImports(decl, bindings, selected) : [decl]
     ),
   ];
-  return { module: { ...module, decls }, bindings, foreignTypeRefs: importedTypeRefs, selected };
+  const expressionRefs = collectExpressionRefs(
+    rewrittenDecls,
+    bindings,
+    resultRefs,
+    passThroughRefs,
+  );
+  const namedCallbackRefs = collectNamedCallbackRefs(rewrittenDecls, bindings);
+  return {
+    module: { ...module, decls },
+    bindings,
+    foreignTypeRefs: importedTypeRefs,
+    expressionRefs,
+    namedCallbackRefs,
+    passThroughRefs,
+    selected,
+  };
+}
+
+function recordFieldNames(module: Module): Set<string> {
+  const fields = new Set<string>();
+  for (const decl of module.decls) {
+    if (decl.kind !== "RecordDecl") continue;
+    for (const field of decl.fields) fields.add(field.name);
+  }
+  return fields;
+}
+
+function collectReflectedCallbackTypeRefs(
+  bindings: Map<string, FfiBinding>,
+  foreignTypeRefs: Map<string, JsTypeRef>,
+) {
+  for (const binding of bindings.values()) {
+    for (const variant of binding.variants) {
+      for (const callback of variant.callbackParamRefs ?? []) {
+        for (const ref of callback.params) {
+          if (ref.type?.kind !== "TName" || ref.type.args.length !== 0) continue;
+          const name = ref.type.name;
+          if (name.includes(".")) continue;
+          if (name === "String" || name === "Number" || name === "Bool" || name.startsWith("Js.")) {
+            continue;
+          }
+          foreignTypeRefs.set(name, ref);
+          foreignTypeRefs.set(ref.key, ref);
+        }
+      }
+    }
+  }
+}
+
+function collectNamedCallbackRefs(
+  decls: Decl[],
+  bindings: Map<string, FfiBinding>,
+): Map<string, JsTypeRef[]> {
+  const refs = new Map<string, JsTypeRef[]>();
+  const variants = new Map<string, FfiVariant>();
+  for (const binding of bindings.values()) {
+    for (const variant of binding.variants) variants.set(variant.internalName, variant);
+    if (binding.variants.length === 1) variants.set(binding.surfaceName, binding.variants[0]);
+  }
+  const visit = (expr: Expr) => {
+    switch (expr.kind) {
+      case "Call": {
+        const variant = expr.callee.kind === "Var" ? variants.get(expr.callee.name) : undefined;
+        if (variant?.callbackParamRefs) {
+          for (const item of variant.callbackParamRefs) {
+            const arg = expr.args[item.argIndex];
+            if (arg?.kind === "Var") refs.set(arg.name, item.params);
+          }
+        }
+        visit(expr.callee);
+        expr.args.forEach(visit);
+        return;
+      }
+      case "Tuple":
+      case "JsonArray":
+        expr.items.forEach(visit);
+        return;
+      case "Record":
+      case "JsonObject":
+        expr.fields.forEach((field) => visit(field.value));
+        return;
+      case "FfiGet":
+        visit(expr.receiver);
+        return;
+      case "FfiCall":
+        visit(expr.receiver);
+        expr.args.forEach(visit);
+        return;
+      case "Lambda":
+        visit(expr.body);
+        return;
+      case "If":
+        visit(expr.cond);
+        visit(expr.thenExpr);
+        visit(expr.elseExpr);
+        return;
+      case "Match":
+        visit(expr.value);
+        expr.arms.forEach((arm) => visit(arm.body));
+        return;
+      case "Panic":
+        visit(expr.message);
+        return;
+      case "Block":
+        for (const item of expr.items) {
+          if (item.kind === "LetDecl") {
+            item.bindings.forEach((binding) => visit(binding.value));
+          } else if (
+            item.kind !== "ImportDecl" && item.kind !== "JsImportDecl" &&
+            item.kind !== "ForeignTypeDecl" && item.kind !== "RecordDecl" &&
+            item.kind !== "TypeDecl"
+          ) {
+            visit(item);
+          }
+        }
+        visit(expr.result);
+        return;
+      case "Binary":
+        visit(expr.left);
+        visit(expr.right);
+        return;
+      case "Unary":
+        visit(expr.value);
+        return;
+      case "Pipe":
+        visit(expr.left);
+        visit(expr.right);
+        return;
+    }
+  };
+  for (const decl of decls) {
+    if (decl.kind === "LetDecl") {
+      decl.bindings.forEach((binding) => visit(binding.value));
+    }
+  }
+  return refs;
+}
+
+function collectExpressionRefs(
+  decls: Decl[],
+  bindings: Map<string, FfiBinding>,
+  resultRefs: Map<string, JsTypeRef>,
+  passThroughRefs: Set<string>,
+): Map<Expr, JsTypeRef> {
+  const refs = new Map<Expr, JsTypeRef>();
+  const visit = (expr: Expr) => {
+    const ref = resultRefForExpr(expr, bindings, resultRefs, passThroughRefs);
+    if (ref) refs.set(expr, ref);
+    switch (expr.kind) {
+      case "Tuple":
+      case "JsonArray":
+        expr.items.forEach(visit);
+        return;
+      case "Record":
+      case "JsonObject":
+        expr.fields.forEach((field) => visit(field.value));
+        return;
+      case "FfiGet":
+        visit(expr.receiver);
+        return;
+      case "FfiCall":
+        visit(expr.receiver);
+        expr.args.forEach(visit);
+        return;
+      case "Lambda":
+        visit(expr.body);
+        return;
+      case "Call":
+        visit(expr.callee);
+        expr.args.forEach(visit);
+        return;
+      case "If":
+        visit(expr.cond);
+        visit(expr.thenExpr);
+        visit(expr.elseExpr);
+        return;
+      case "Match":
+        visit(expr.value);
+        expr.arms.forEach((arm) => visit(arm.body));
+        return;
+      case "Panic":
+        visit(expr.message);
+        return;
+      case "Block":
+        for (const item of expr.items) {
+          if (item.kind === "LetDecl") {
+            item.bindings.forEach((binding) => visit(binding.value));
+          } else if (
+            item.kind !== "ImportDecl" && item.kind !== "JsImportDecl" &&
+            item.kind !== "ForeignTypeDecl" && item.kind !== "RecordDecl" &&
+            item.kind !== "TypeDecl"
+          ) {
+            visit(item);
+          }
+        }
+        visit(expr.result);
+        return;
+      case "Binary":
+        visit(expr.left);
+        visit(expr.right);
+        return;
+      case "Unary":
+        visit(expr.value);
+        return;
+      case "Pipe":
+        visit(expr.left);
+        visit(expr.right);
+        return;
+    }
+  };
+  for (const decl of decls) {
+    if (decl.kind === "LetDecl") {
+      decl.bindings.forEach((binding) => visit(binding.value));
+    }
+  }
+  return refs;
 }
 
 export function rewriteExprCalls(
@@ -77,6 +318,7 @@ export function rewriteExprCalls(
   resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
+  passThroughRefs: Set<string> = new Set(),
 ): Expr {
   switch (expr.kind) {
     case "FfiGet": {
@@ -157,7 +399,7 @@ export function rewriteExprCalls(
     case "Var": {
       const property = reflectedReceiverProperty(expr.name, bindings, selected, refs);
       return property ??
-        objectReceiverProperty(expr.name, bindings, selected, objectAccess) ??
+        objectReceiverProperty(expr.name, bindings, selected, objectAccess, activeRecordFields) ??
         expr;
     }
     case "Call": {
@@ -432,6 +674,7 @@ export function rewriteExprCalls(
         resultRefs,
         objectAccess,
         importedTypeRefs,
+        passThroughRefs,
         rewriteDeclCalls,
         rewriteExprCalls,
       );
@@ -462,6 +705,28 @@ export function rewriteExprCalls(
         ...expr,
         value: rewriteExprCalls(
           expr.value,
+          bindings,
+          selected,
+          refs,
+          resultRefs,
+          objectAccess,
+          importedTypeRefs,
+        ),
+      };
+    case "Pipe":
+      return {
+        ...expr,
+        left: rewriteExprCalls(
+          expr.left,
+          bindings,
+          selected,
+          refs,
+          resultRefs,
+          objectAccess,
+          importedTypeRefs,
+        ),
+        right: rewriteExprCalls(
+          expr.right,
           bindings,
           selected,
           refs,

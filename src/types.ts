@@ -329,6 +329,7 @@ export function baseEnv(typeEnv: TypeEnv = baseTypeEnv()): Env {
   const printable = fresh() as Extract<Ty, { tag: "var" }>;
   env.set("print", { vars: [printable.id], type: fn([printable], VoidTy) });
   addBasisConstructors(env, typeEnv);
+  addBasisValues(env, typeEnv);
   return env;
 }
 
@@ -342,6 +343,10 @@ export function baseTypeEnv(): TypeEnv {
         { ...freshTypeInfo(name, 0), basis: true },
       ]),
     );
+    basisTypeEnvCache.set("Js.Array", {
+      ...freshTypeInfo("Js.Array", 1),
+      basis: true,
+    });
     for (const type of basisTypes) {
       basisTypeEnvCache.set(type.name, {
         ...freshTypeInfo(type.name, type.params.length),
@@ -386,4 +391,18 @@ function addBasisConstructors(env: Env, typeEnv: TypeEnv) {
       });
     }
   }
+}
+
+function addBasisValues(env: Env, typeEnv: TypeEnv) {
+  const result = typeEnv.get("Result");
+  const jsError = typeEnv.get("Js.Error");
+  if (!result || !jsError) return;
+  const input = fresh("input") as Extract<Ty, { tag: "var" }>;
+  const output = fresh("output") as Extract<Ty, { tag: "var" }>;
+  env.set("Json.assert", {
+    vars: [input.id, output.id],
+    type: fn([input], named(result, [output, named(jsError)])),
+    status: "value",
+    basis: true,
+  });
 }

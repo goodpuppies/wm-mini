@@ -64,7 +64,7 @@ export function typeExprFromTsType(
     return option(inner);
   }
   if (type.isUnion()) {
-    if (position === "param" && type.types.some(isStringLike)) return name("String");
+    if (position === "param" && type.types.some(isFunctionType)) return name("Js.Value");
     if (type.types.some(isObjectLike)) {
       if (position === "result" && type.types.every(isObjectLike)) return name("Js.Object");
       return position === "param" && type.types.some(isStringLike) && type.types
@@ -73,6 +73,7 @@ export function typeExprFromTsType(
         ? name("String")
         : name("Js.Value");
     }
+    if (position === "param" && type.types.some(isStringLike)) return name("String");
     if (type.types.some(isStringLike)) return name("String");
     const mapped = type.types.map((item) => typeExprFromTsType(checker, item, position));
     if (mapped.some((item) => item?.kind === "TName" && item.name === "Js.Value")) {
@@ -90,6 +91,11 @@ export function typeExprFromTsType(
   if (type.flags & ts.TypeFlags.StringLiteral) return name("String");
   if (type.flags & ts.TypeFlags.NumberLiteral) return name("Number");
   if (type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) return name("Void");
+  if (isNumericTypedArray(checker, type)) {
+    return { kind: "TName", name: "Js.Array", args: [name("Number")] };
+  }
+  const arrayElement = arrayElementType(checker, type, position);
+  if (arrayElement) return { kind: "TName", name: "Js.Array", args: [arrayElement] };
   if (position === "result" && isObjectLike(type)) return name("Js.Object");
   if (type.flags & ts.TypeFlags.TypeParameter) {
     const constraint = checker.getBaseConstraintOfType(type);
@@ -140,21 +146,26 @@ export function functionVariantsFromSignature(
       const type = typeOfSymbol(checker, symbol) ?? checker.getAnyType();
       if (declarationParam?.dotDotDotToken) {
         const element = restElementType(checker, type) ?? checker.getAnyType();
-        const mapped = paramTypeExpr(checker, element, index);
+        const callbackRefs = callbackRefsForParam(checker, element, index, callbackParamRef);
+        const mapped = paramTypeExpr(checker, element, index, callbackRefs);
         return [{
           type: mapped,
           optional: false,
           rest: true,
-          callbackRefs: callbackRefsForParam(checker, element, index, callbackParamRef),
+          callbackRefs,
         }];
       }
       const optional = !!declarationParam?.questionToken || !!declarationParam?.initializer;
-      const mapped = stripOptionForOptional(paramTypeExpr(checker, type, index), optional);
+      const callbackRefs = callbackRefsForParam(checker, type, index, callbackParamRef);
+      const mapped = stripOptionForOptional(
+        paramTypeExpr(checker, type, index, callbackRefs),
+        optional,
+      );
       return [{
         type: mapped,
         optional,
         rest: false,
-        callbackRefs: callbackRefsForParam(checker, type, index, callbackParamRef),
+        callbackRefs,
       }];
     });
   const result = typeExprFromTsType(checker, checker.getReturnTypeOfSignature(signature)) ??
@@ -242,7 +253,12 @@ export function callbackParamRefsFromCall(
   return refs.length ? refs : undefined;
 }
 
-function paramTypeExpr(checker: ts.TypeChecker, type: ts.Type, index: number): TypeExpr {
+function paramTypeExpr(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  index: number,
+  callbackRefs?: JsTypeRef[],
+): TypeExpr {
   if (isAnyOrUnknown(type)) return varType(`a${index}`);
   const signature = type.getCallSignatures()[0];
   if (signature && signatureHasRest(signature)) {
@@ -251,17 +267,18 @@ function paramTypeExpr(checker: ts.TypeChecker, type: ts.Type, index: number): T
       typeExprFromTsType(checker, checker.getReturnTypeOfSignature(signature)) ?? name("Void"),
     );
   }
-  if (signature) return callbackFunctionTypeFromSignature(checker, signature);
+  if (signature) return callbackFunctionTypeFromSignature(checker, signature, callbackRefs);
   return typeExprFromTsType(checker, type, "param") ?? name("Js.Value");
 }
 
 function callbackFunctionTypeFromSignature(
   checker: ts.TypeChecker,
   signature: ts.Signature,
+  callbackRefs?: JsTypeRef[],
 ): TypeExpr {
   const params = signature.getParameters().map((symbol, index) => {
     const type = typeOfSymbol(checker, symbol) ?? checker.getAnyType();
-    return callbackParamTypeExpr(checker, type, index);
+    return callbackRefs?.[index]?.type ?? callbackParamTypeExpr(checker, type, index);
   });
   const result = typeExprFromTsType(checker, checker.getReturnTypeOfSignature(signature)) ??
     name("Void");
@@ -320,6 +337,43 @@ function restElementType(checker: ts.TypeChecker, type: ts.Type): ts.Type | unde
   return checker.getIndexTypeOfType(type, ts.IndexKind.Number);
 }
 
+function arrayElementType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  position: "param" | "result",
+): TypeExpr | undefined {
+  if (checker.isArrayType(type)) {
+    return typeExprFromArrayElement(checker, restElementType(checker, type));
+  }
+  if (position !== "param") return undefined;
+  const text = checker.typeToString(type);
+  if (
+    !/\b(ArrayLike|Iterable|Uint8Array|Uint16Array|Uint32Array|Int8Array|Int16Array|Int32Array|Float32Array|Float64Array|BigInt64Array|BigUint64Array)\b/
+      .test(text)
+  ) {
+    return undefined;
+  }
+  return typeExprFromArrayElement(checker, checker.getIndexTypeOfType(type, ts.IndexKind.Number));
+}
+
+function isNumericTypedArray(checker: ts.TypeChecker, type: ts.Type): boolean {
+  return /\b(?:Uint8Array|Uint8ClampedArray|Uint16Array|Uint32Array|Int8Array|Int16Array|Int32Array|Float32Array|Float64Array)\b/
+    .test(
+      checker.typeToString(type),
+    );
+}
+
+function typeExprFromArrayElement(
+  checker: ts.TypeChecker,
+  type: ts.Type | undefined,
+): TypeExpr {
+  if (!type) return name("Js.Value");
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    return varType(type.symbol?.getName() ?? "item");
+  }
+  return typeExprFromTsType(checker, type, "param") ?? name("Js.Value");
+}
+
 function isTsType(checker: ts.TypeChecker, type: ts.Type, expected: string): boolean {
   return checker.typeToString(type) === expected;
 }
@@ -338,4 +392,9 @@ function isObjectLike(type: ts.Type): boolean {
 
 function isStringLike(type: ts.Type): boolean {
   return !!(type.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral));
+}
+
+function isFunctionType(type: ts.Type): boolean {
+  return type.getCallSignatures().length > 0 || !!(type.flags & ts.TypeFlags.Object) &&
+      /^(Function|TimerHandler)$/.test(type.symbol?.getName() ?? "");
 }

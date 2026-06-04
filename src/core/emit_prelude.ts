@@ -111,6 +111,11 @@ export function emitRuntimePrelude(): string[] {
     "const print = (value) => console.log(__wm_show(value));",
     "const __wm_fail = (name, message) => { const e = new Error(message); e.name = name; throw e; };",
     ...emitBasisConstructors(),
+    `const Json = {
+  assert: (value) => value == null
+    ? __wm_basis_Err(new Error("Json.assert failed"))
+    : __wm_basis_Ok(value),
+};`,
     "const __wm_op_concat = ([a, b]) => a + b;",
     "const __wm_op_add = ([a, b]) => a + b;",
     "const __wm_op_sub = (x) => __wm_is_tuple(x) ? x[0] - x[1] : -x;",

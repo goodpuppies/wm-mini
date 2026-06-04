@@ -2,8 +2,8 @@ import type { Decl, Expr, Param, Pattern, TypeExpr } from "../ast.ts";
 import {
   type JsCallArgHint,
   type JsMemberType,
-  jsRefMember,
   jsPrimitiveValueRef,
+  jsRefMember,
   jsRefTypeExpr,
   type JsTypeRef,
 } from "./js_types.ts";
@@ -11,6 +11,7 @@ import {
   addVariants,
   callArgHint,
   callHintKey,
+  dynamicReceiverArgType,
   type FfiBinding,
   type FfiVariant,
   fn,
@@ -132,6 +133,7 @@ export function objectReceiverProperty(
   bindings: Map<string, FfiBinding>,
   selected: Set<string>,
   objectAccess: Map<string, ObjectAccess>,
+  recordFields: Set<string> = new Set(),
 ): Expr | undefined {
   const parts = exprName.split(".");
   if (parts.length < 2) return undefined;
@@ -149,6 +151,7 @@ export function objectReceiverProperty(
     );
   }
   if (access.kind === "unresolved") {
+    if (recordFields.has(path[0])) return undefined;
     return {
       kind: "FfiGet",
       receiver: { kind: "Var", name: baseName },
@@ -215,7 +218,7 @@ export function objectReceiverCall(
         type: fn(
           [
             name("Js.Object"),
-            ...args.map((_, index) => ({ kind: "TVar" as const, name: `a${index}` })),
+            ...args.map(dynamicReceiverArgType),
           ],
           { kind: "TVar", name: "b" },
         ),
@@ -299,13 +302,14 @@ export function rememberLetRefs(
   resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
+  passThroughRefs: Set<string> = new Set(),
 ) {
   if (decl.kind !== "LetDecl") return;
   for (const binding of decl.bindings) {
     if (binding.pattern.kind !== "PVar") continue;
     const access = objectAccessForType(binding.annotation, importedTypeRefs);
     if (access) objectAccess.set(binding.pattern.name, access);
-    const ref = resultRefForExpr(binding.value, bindings, resultRefs);
+    const ref = resultRefForExpr(binding.value, bindings, resultRefs, passThroughRefs);
     if (!ref) continue;
     refs.set(binding.pattern.name, ref);
     resultRefs.set(binding.pattern.name, ref);
@@ -316,14 +320,53 @@ export function resultRefForExpr(
   expr: Expr,
   bindings: Map<string, FfiBinding>,
   resultRefs: Map<string, JsTypeRef>,
+  passThroughRefs: Set<string> = new Set(),
 ): JsTypeRef | undefined {
   if (expr.kind === "Var") return resultRefs.get(expr.name);
   const callRef = variantFromCall(expr, bindings)?.resultRef;
   if (callRef) return callRef;
-  if (expr.kind !== "Match") return undefined;
-  const matchedRef = resultRefForExpr(expr.value, bindings, resultRefs);
-  if (!matchedRef) return undefined;
-  return matchPassThroughsOkPayload(expr) ? matchedRef : undefined;
+  if (expr.kind === "Call" && expr.callee.kind === "Var" && passThroughRefs.has(expr.callee.name)) {
+    return expr.args.length === 1
+      ? resultRefForExpr(expr.args[0], bindings, resultRefs, passThroughRefs)
+      : undefined;
+  }
+  if (expr.kind === "Pipe" && expr.right.kind === "Var" && passThroughRefs.has(expr.right.name)) {
+    return resultRefForExpr(expr.left, bindings, resultRefs, passThroughRefs);
+  }
+  if (
+    expr.kind === "Pipe" && expr.right.kind === "Call" && expr.right.callee.kind === "Var" &&
+    passThroughRefs.has(expr.right.callee.name)
+  ) {
+    return resultRefForExpr(expr.left, bindings, resultRefs, passThroughRefs);
+  }
+  if (expr.kind === "Match") {
+    const matchedRef = resultRefForExpr(expr.value, bindings, resultRefs, passThroughRefs);
+    if (!matchedRef) return undefined;
+    return matchPassThroughsOkPayload(expr) ? matchedRef : undefined;
+  }
+  return undefined;
+}
+
+export function letBindingPassesThroughOkPayload(decl: Decl): string[] {
+  if (decl.kind !== "LetDecl") return [];
+  return decl.bindings.flatMap((binding) => {
+    if (binding.pattern.kind !== "PVar") return [];
+    if (!lambdaPassesThroughOkPayload(binding.value)) return [];
+    return [binding.pattern.name];
+  });
+}
+
+function lambdaPassesThroughOkPayload(expr: Expr): boolean {
+  if (expr.kind !== "Lambda" || expr.params.length !== 1) return false;
+  const binder = paramBinder(expr.params[0]);
+  if (!binder) return false;
+  const body = expr.body.kind === "Block" && expr.body.items.length === 0
+    ? expr.body.result
+    : expr.body;
+  if (body.kind !== "Match" || body.value.kind !== "Var" || body.value.name !== binder) {
+    return false;
+  }
+  return matchPassThroughsOkPayload(body);
 }
 
 function variantFromCall(expr: Expr, bindings: Map<string, FfiBinding>): FfiVariant | undefined {
