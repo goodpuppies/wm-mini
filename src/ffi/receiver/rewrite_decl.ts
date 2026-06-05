@@ -1,7 +1,7 @@
-import type { Decl, Expr } from "../ast.ts";
-import type { JsTypeRef } from "./js_types.ts";
+import type { Decl, Expr } from "../../ast.ts";
+import type { JsTypeRef } from "../reflect/types.ts";
 import type { ObjectAccess } from "./receiver.ts";
-import type { FfiBinding } from "./shared.ts";
+import type { FfiBinding } from "../shared.ts";
 
 type RewriteExpr = (
   expr: Expr,

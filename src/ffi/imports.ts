@@ -13,7 +13,7 @@ import {
   jsModuleMembers,
   jsModuleTypeRef,
   type JsTypeRef,
-} from "./js_types.ts";
+} from "./reflect/types.ts";
 import { addVariants, type FfiBinding, memberVariants } from "./shared.ts";
 
 export function collectFfiDecl(

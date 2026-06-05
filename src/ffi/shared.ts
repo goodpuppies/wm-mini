@@ -1,5 +1,10 @@
 import type { Decl, Expr, JsImportSpec, JsTarget, Module, Param, TypeExpr } from "../ast.ts";
-import type { JsCallArgHint, JsCallbackParamRefs, JsMemberType, JsTypeRef } from "./js_types.ts";
+import type {
+  JsCallArgHint,
+  JsCallbackParamRefs,
+  JsMemberType,
+  JsTypeRef,
+} from "./reflect/types.ts";
 
 export type FfiElaboration = {
   module: Module;
@@ -193,7 +198,9 @@ function unknownArgScore(expected: TypeExpr, candidate: FfiVariant): number {
     if (expected.name === "Js.Object") return 1;
     if (expected.name === "Js.Value") return 2;
   }
-  if (expected.name === "Number" || expected.name === "String" || expected.name === "Bool") return 4;
+  if (expected.name === "Number" || expected.name === "String" || expected.name === "Bool") {
+    return 4;
+  }
   return 2;
 }
 

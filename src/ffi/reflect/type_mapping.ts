@@ -1,14 +1,14 @@
 import ts from "typescript";
-import type { TypeExpr } from "../ast.ts";
-import { typeOfSymbol } from "./js_reflect_host.ts";
+import type { TypeExpr } from "../../ast.ts";
+import { typeOfSymbol } from "./host.ts";
 import type {
   JsCallableVariant,
   JsCallArgHint,
   JsCallbackParamRefs,
   JsMemberType,
   JsTypeRef,
-} from "./js_types.ts";
-import { fn, name, option, varType } from "./type_expr.ts";
+} from "./types.ts";
+import { fn, name, option, varType } from "../type_expr.ts";
 
 const maxReflectedRestArity = 8;
 
@@ -33,7 +33,10 @@ export function jsMemberTypeFromTsType(
           callbackParamRef?.(index, paramIndex, callbackParamIndex, callbackParamType, signature),
       ).map((variant) => ({
         ...variant,
-        resultRef: resultRefWithType(resultRef?.(index, signature), returnTypeOfVariant(variant.type)),
+        resultRef: resultRefWithType(
+          resultRef?.(index, signature),
+          returnTypeOfVariant(variant.type),
+        ),
       }))
     ),
   );
@@ -65,7 +68,8 @@ export function typeExprFromTsType(
     return name("String");
   }
   if (
-    position === "param" && /\b(ArrayBuffer|ArrayBufferLike|BufferSource)\b/.test(checker.typeToString(type))
+    position === "param" &&
+    /\b(ArrayBuffer|ArrayBufferLike|BufferSource)\b/.test(checker.typeToString(type))
   ) {
     return name("Js.Object");
   }
@@ -393,14 +397,17 @@ function promiseElementType(
   type: ts.Type,
   position: "param" | "result",
 ): TypeExpr | undefined {
-  const promised = (checker as { getPromisedTypeOfPromise?: (type: ts.Type) => ts.Type | undefined })
-    .getPromisedTypeOfPromise?.(type);
+  const promised =
+    (checker as { getPromisedTypeOfPromise?: (type: ts.Type) => ts.Type | undefined })
+      .getPromisedTypeOfPromise?.(type);
   if (promised) return typeExprFromTsType(checker, promised, position) ?? name("Js.Value");
   const text = checker.typeToString(type);
   if (!/\bPromise(?:Like)?\b/.test(text)) return undefined;
   const ref = type as ts.TypeReference;
   const typeArg = ref.typeArguments?.[0] ?? checker.getTypeArguments(ref)[0];
-  return typeArg ? typeExprFromTsType(checker, typeArg, position) ?? name("Js.Value") : name("Js.Value");
+  return typeArg
+    ? typeExprFromTsType(checker, typeArg, position) ?? name("Js.Value")
+    : name("Js.Value");
 }
 
 function isNumericTypedArray(checker: ts.TypeChecker, type: ts.Type): boolean {

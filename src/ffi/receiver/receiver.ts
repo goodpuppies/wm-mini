@@ -1,4 +1,4 @@
-import type { Decl, Expr, Param, Pattern, TypeExpr } from "../ast.ts";
+import type { Decl, Expr, Param, Pattern, TypeExpr } from "../../ast.ts";
 import {
   type JsCallArgHint,
   type JsMemberType,
@@ -6,7 +6,7 @@ import {
   jsRefMember,
   jsRefTypeExpr,
   type JsTypeRef,
-} from "./js_types.ts";
+} from "../reflect/types.ts";
 import {
   addVariants,
   callArgHint,
@@ -20,7 +20,7 @@ import {
   paramBinder,
   prependReceiver,
   selectVariant,
-} from "./shared.ts";
+} from "../shared.ts";
 
 export type ObjectAccess =
   | { kind: "ref"; ref: JsTypeRef; receiverType?: TypeExpr }

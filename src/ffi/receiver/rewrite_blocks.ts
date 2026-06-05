@@ -1,5 +1,5 @@
-import type { Decl, Expr } from "../ast.ts";
-import type { JsTypeRef } from "./js_types.ts";
+import type { Decl, Expr } from "../../ast.ts";
+import type { JsTypeRef } from "../reflect/types.ts";
 import {
   letBindingPassesThroughOkPayload,
   type ObjectAccess,
@@ -7,7 +7,7 @@ import {
   rememberLetRefs,
   resultRefForExpr,
 } from "./receiver.ts";
-import { type FfiBinding, isDecl } from "./shared.ts";
+import { type FfiBinding, isDecl } from "../shared.ts";
 
 type RewriteDecl = (
   decl: Decl,

@@ -6,7 +6,7 @@ import {
 } from "./core/artifact.ts";
 import { emitCoreProgram } from "./core/emit_js.ts";
 import { coreFromSurface } from "./core/from_surface.ts";
-import { resolveDelayedFfiElaboration } from "./ffi/delayed.ts";
+import { resolveDelayedFfiElaboration } from "./ffi/delayed/delayed.ts";
 import { prepareFfiElaboration } from "./ffi/elab.ts";
 import { inferModule, inferModuleWithSteps, type InferResult, type InferStep } from "./infer.ts";
 import {

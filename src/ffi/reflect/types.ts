@@ -1,12 +1,12 @@
 import ts from "typescript";
-import type { TypeExpr } from "../ast.ts";
+import type { TypeExpr } from "../../ast.ts";
 import {
   callbackParamRefsFromCall,
   dedupeVariants,
   functionVariantsFromSignature,
   jsMemberTypeFromTsType,
   typeExprFromTsType,
-} from "./js_type_mapping.ts";
+} from "./type_mapping.ts";
 import {
   findCallInitializer,
   findDeclaredValue,
@@ -16,38 +16,16 @@ import {
   type JsReflectionSource,
   reflectSource,
   typeOfSymbol,
-} from "./js_reflect_host.ts";
-import { fn, name, varType } from "./type_expr.ts";
-
-export type JsMemberType = {
-  name: string;
-  type: TypeExpr;
-  overloads?: TypeExpr[];
-  variants?: JsCallableVariant[];
-};
-
-export type JsCallableVariant = {
-  type: TypeExpr;
-  resultRef?: JsTypeRef;
-  callbackParamRefs?: JsCallbackParamRefs[];
-};
-
-export type JsTypeRef = {
-  key: string;
-  source: string;
-  expr: string;
-  type?: TypeExpr;
-};
-
-export type JsCallbackParamRefs = {
-  argIndex: number;
-  params: JsTypeRef[];
-};
-
-export type JsCallArgHint =
-  | { kind: "string"; value: string }
-  | { kind: "function"; arity: number }
-  | { kind: "unknown" };
+} from "./host.ts";
+import type {
+  JsCallableVariant,
+  JsCallArgHint,
+  JsCallbackParamRefs,
+  JsMemberType,
+  JsTypeRef,
+} from "./type_refs.ts";
+export type * from "./type_refs.ts";
+import { fn, name, varType } from "../type_expr.ts";
 
 const memberCache = new Map<string, JsMemberType | undefined>();
 const namespaceCache = new Map<string, JsMemberType[]>();
@@ -203,7 +181,6 @@ export function jsConstructMember(ref: JsTypeRef): JsMemberType | undefined {
               ref.source,
               ref.expr,
               ref,
-              signature,
             ),
           }))
         ),
@@ -498,19 +475,9 @@ function constructReturnRef(
   source: string,
   ctorExpr: string,
   ref: JsTypeRef,
-  signature: ts.Signature,
 ): JsTypeRef {
   const canonical = canonicalConstructorTypeRef(ref);
   if (canonical) return canonical;
-  const declaration = signature.getDeclaration();
-  const params =
-    declaration?.parameters.map((param, index) =>
-      param.dotDotDotToken ? `...__wm_arg_${index}: any[]` : `__wm_arg_${index}: any`
-    ).join(", ") ?? "";
-  const args =
-    declaration?.parameters.map((param, index) =>
-      param.dotDotDotToken ? `...__wm_arg_${index}` : `__wm_arg_${index}`
-    ).join(", ") ?? "";
   return returnTypeRef(key, source, `ReturnType<() => InstanceType<typeof ${ctorExpr}>>`);
 }
 
