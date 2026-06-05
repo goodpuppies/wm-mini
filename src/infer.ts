@@ -42,9 +42,24 @@ export function inferModule(module: Module, imports = new Map<string, InferResul
   return inferModuleWithSteps(module, imports).result;
 }
 
+export function inferModulePartial(
+  module: Module,
+  imports = new Map<string, InferResult>(),
+): InferResult {
+  return inferModuleCore(module, imports, true).result;
+}
+
 export function inferModuleWithSteps(
   module: Module,
   imports = new Map<string, InferResult>(),
+): { result: InferResult; steps: InferStep[] } {
+  return inferModuleCore(module, imports, false);
+}
+
+function inferModuleCore(
+  module: Module,
+  imports: Map<string, InferResult>,
+  recover: boolean,
 ): { result: InferResult; steps: InferStep[] } {
   const typeEnv = baseTypeEnv();
   const env = baseEnv(typeEnv);
@@ -68,7 +83,10 @@ export function inferModuleWithSteps(
         addAdts(adts, imported.exportedStructure.adts);
         addExportableTypes(exportableTypeIds, imported.exportedStructure.types);
       } catch (error) {
-        throw diagnosticError(error, decl.node);
+        const diagnostic = diagnosticError(error, decl.node);
+        if (!recover) throw diagnostic;
+        diagnostics.push(diagnostic.diagnostic);
+        break;
       }
       continue;
     }
@@ -89,12 +107,21 @@ export function inferModuleWithSteps(
         ffiObligations,
       );
     } catch (error) {
-      throw diagnosticError(error, decl.node);
+      const diagnostic = diagnosticError(error, decl.node);
+      if (!recover) throw diagnostic;
+      diagnostics.push(diagnostic.diagnostic);
+      break;
     }
     steps.push({ declIndex, env: snapshotEnv(env) });
   }
 
-  assertNoTopLevelFreeTypeVars(env);
+  try {
+    assertNoTopLevelFreeTypeVars(env);
+  } catch (error) {
+    const diagnostic = diagnosticError(error, module.node);
+    if (!recover) throw diagnostic;
+    diagnostics.push(diagnostic.diagnostic);
+  }
   const structure: StructureEnv = { values: env, types: typeEnv, adts };
   const exportedStructure: StructureEnv = {
     values: exports,

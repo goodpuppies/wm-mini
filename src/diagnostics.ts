@@ -39,24 +39,32 @@ export function formatError(
   const location = span && source
     ? `${filePath || "<input>"}:${span.line}:${span.col}`
     : filePath || "<input>";
-  
+
   let output = `error[${location}]: ${message}\n`;
-  
+
   if (source && span) {
     const starts = lineStarts(source);
     const lineIndex = Math.max(0, Math.min(span.line - 1, starts.length - 1));
     const lineStart = starts[lineIndex];
     const lineEnd = source.indexOf("\n", lineStart);
     const line = lineEnd === -1 ? source.slice(lineStart) : source.slice(lineStart, lineEnd);
-    
+
     output += `  ${line}\n`;
-    
+
     const spaces = " ".repeat(span.col);
     const carets = "^".repeat(Math.max(1, span.end - span.start));
     output += `  ${spaces}${carets}\n`;
   }
-  
+
   return output;
+}
+
+export function formatDiagnosticError(
+  error: FrontendDiagnosticError,
+  filePath: string | undefined,
+  source: string | undefined,
+): string {
+  return formatError(error.diagnostic.message, filePath, source, error.diagnostic.span);
 }
 
 export function diagnosticError(

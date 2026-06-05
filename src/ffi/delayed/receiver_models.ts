@@ -3,7 +3,6 @@ import type { InferResult } from "../../infer.ts";
 import { prune, type Ty } from "../../types.ts";
 import type { FfiElaboration } from "../shared.ts";
 import { fn, memberVariants, name, nameArgs, tvar } from "../shared.ts";
-import { resultRefForExpr } from "../receiver/receiver.ts";
 import {
   type JsMemberType,
   jsPrimitiveValueRef,
@@ -146,6 +145,7 @@ export function promiseCallbackResultType(
 export function inferredType(result: InferResult, expr: Expr): Ty | undefined {
   const direct = result.types.get(expr);
   if (direct) return direct;
+  if (expr.kind === "Var") return result.env.get(expr.name)?.type;
   const id = expr.node?.id;
   if (id === undefined) return undefined;
   for (const [candidate, type] of result.types) {
@@ -237,9 +237,7 @@ export function expressionRefForReceiver(
     const ref = valueRefs.get(resolved.name);
     if (ref) return ref;
   }
-  return ffi.expressionRefs.get(original) ??
-    ffi.expressionRefs.get(resolved) ??
-    resultRefForExpr(resolved, ffi.bindings, valueRefs, ffi.passThroughRefs);
+  return undefined;
 }
 
 export function receiverTypeForRef(ref: JsTypeRef): TypeExpr {

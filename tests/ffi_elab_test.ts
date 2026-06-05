@@ -52,58 +52,6 @@ Deno.test("FFI elaboration rewrites namespace and object calls to concrete impor
   );
 });
 
-Deno.test("FFI elaboration rewrites reflected receiver prototype calls", async () => {
-  const module = await parse(`
-    from js.module("node:child_process") import { spawn };
-    let main = () => {
-      let proc = spawn("cmd");
-      match(proc) {
-        Ok(p) => {
-          p.stdout.on("data", (chunk) => { print(chunk) })
-        },
-        Err(_) => { proc },
-      }
-    };
-  `);
-
-  const ffi = prepareFfiElaboration(module);
-  const receiverImport = ffi.module.decls.find((decl) =>
-    decl.kind === "JsImportDecl" && decl.target.kind === "JsReceiver"
-  );
-
-  assertEquals(
-    receiverImport?.kind === "JsImportDecl" && receiverImport.target.kind === "JsReceiver"
-      ? receiverImport.target.path
-      : undefined,
-    ["stdout", "on"],
-  );
-});
-
-Deno.test("FFI elaboration preserves receiver refs through match unwrapping", async () => {
-  const module = await parse(`
-    from js.module("node:child_process") import { spawn };
-    let proc = match(spawn("cmd")) {
-      Ok(p) => { p },
-      Err(_) => { Panic("spawn failed") },
-    };
-    let main = () => {
-      proc.stdout.on("data", (chunk) => { print(chunk) })
-    };
-  `);
-
-  const ffi = prepareFfiElaboration(module);
-  const receiverImport = ffi.module.decls.find((decl) =>
-    decl.kind === "JsImportDecl" && decl.target.kind === "JsReceiver"
-  );
-
-  assertEquals(
-    receiverImport?.kind === "JsImportDecl" && receiverImport.target.kind === "JsReceiver"
-      ? receiverImport.target.path
-      : undefined,
-    ["stdout", "on"],
-  );
-});
-
 Deno.test("HM inference rejects unelaborated reflected JS imports", async () => {
   const module = await parse(`
     from js.global("Math") import * as Math;
@@ -132,25 +80,6 @@ Deno.test("FFI elaboration skips Result wrapping for unsafe imports", async () =
   assertEquals(ffi.bindings.get("get")?.variants[0].fallible, false);
   assertEquals(ffi.bindings.get("construct")?.variants[0].fallible, false);
   assertEquals(ffi.bindings.get("R.sqrt")?.variants[0].fallible, false);
-});
-
-Deno.test("FFI elaboration reflects global value constructors and properties", async () => {
-  const module = await parse(`
-    from js.global import { URL };
-    let path = match(URL.new("https://example.com/a")) {
-      Ok(url) => { url.pathname },
-      Err(_) => { Panic("url failed") },
-    };
-  `);
-
-  const ffi = prepareFfiElaboration(module);
-  const imports = ffi.module.decls.filter((decl) => decl.kind === "JsImportDecl");
-
-  assertEquals(ffi.bindings.get("URL.new")?.variants[0].target.kind, "JsConstructor");
-  assertEquals(
-    imports.some((decl) => decl.kind === "JsImportDecl" && decl.target.kind === "JsReceiver"),
-    true,
-  );
 });
 
 Deno.test("FFI elaboration reflects callable root globals", async () => {

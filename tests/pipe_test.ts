@@ -47,7 +47,7 @@ Deno.test("pipe member segments elaborate to FFI receiver calls", async () => {
   `);
 });
 
-Deno.test("pipe member chains preserve refs through Result pass-through helpers", async () => {
+Deno.test("pipe member chains continue through HM-typed primitive results", async () => {
   await checkSource(`
     let try = (result) => {
       match(result) {
@@ -56,7 +56,8 @@ Deno.test("pipe member chains preserve refs through Result pass-through helpers"
       }
     };
     let hex = (byte: Number) => {
-      byte :> .toString(16) :> try :> .padStart(2, "0")
+      let text: String = byte :> .toString(16) :> try;
+      text :> .padStart(2, "0")
     };
   `);
 });

@@ -8,10 +8,8 @@ type RewriteExpr = (
   bindings: Map<string, FfiBinding>,
   selected: Set<string>,
   refs: Map<string, JsTypeRef>,
-  resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
-  passThroughRefs?: Set<string>,
 ) => Expr;
 
 export function rewriteDeclCalls(
@@ -19,10 +17,8 @@ export function rewriteDeclCalls(
   bindings: Map<string, FfiBinding>,
   selected: Set<string>,
   refs: Map<string, JsTypeRef>,
-  resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
-  passThroughRefs: Set<string>,
   rewriteExpr: RewriteExpr,
 ): Decl {
   if (decl.kind !== "LetDecl") return decl;
@@ -35,10 +31,8 @@ export function rewriteDeclCalls(
         bindings,
         selected,
         refs,
-        resultRefs,
         objectAccess,
         importedTypeRefs,
-        passThroughRefs,
       ),
     })),
   };

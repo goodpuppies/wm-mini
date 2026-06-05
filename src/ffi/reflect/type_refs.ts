@@ -27,5 +27,6 @@ export type JsCallbackParamRefs = {
 
 export type JsCallArgHint =
   | { kind: "string"; value: string }
-  | { kind: "function"; arity: number }
+  | { kind: "function"; arity: number; paramTypes?: TypeExpr[]; resultType?: TypeExpr }
+  | { kind: "ref"; ref: JsTypeRef; type?: TypeExpr }
   | { kind: "unknown" };

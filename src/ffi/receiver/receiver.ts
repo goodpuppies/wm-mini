@@ -1,8 +1,9 @@
-import type { Decl, Expr, Param, Pattern, TypeExpr } from "../../ast.ts";
+import type { Decl, Expr, Param, TypeExpr } from "../../ast.ts";
 import {
   type JsCallArgHint,
   type JsMemberType,
   jsPrimitiveValueRef,
+  jsRefCall,
   jsRefMember,
   jsRefTypeExpr,
   type JsTypeRef,
@@ -166,7 +167,7 @@ export function objectReceiverProperty(
     surfaceName,
     path.at(-1)!,
     { kind: "JsReceiver", path },
-    [{ type: fn([name("Js.Object")], { kind: "TVar", name: "a" }) }],
+    [{ type: fn([name("Js.Object")], name("Js.Value")) }],
     true,
   );
   const variant = selectVariant(bindings.get(surfaceName)?.variants ?? [], [{
@@ -232,7 +233,7 @@ export function objectReceiverCall(
             name("Js.Object"),
             ...args.map(dynamicReceiverArgType),
           ],
-          { kind: "TVar", name: "b" },
+          name("Js.Value"),
         ),
       }],
       true,
@@ -254,6 +255,56 @@ export function objectReceiverCall(
     path: parts.slice(1),
     args,
   };
+}
+
+export function reflectedFunctionCallCandidate(
+  name: string,
+  args: Expr[],
+  bindings: Map<string, FfiBinding>,
+  selected: Set<string>,
+  refs: Map<string, JsTypeRef>,
+  objectAccess: Map<string, ObjectAccess>,
+): ReflectedReceiverCall | undefined {
+  const ref = refs.get(name);
+  if (!ref) return undefined;
+  const hints = args.map((arg) => callArgHintWithRefs(arg, refs, objectAccess));
+  if (!hints.some((hint) => hint.kind === "ref" || hint.kind === "function")) return undefined;
+  const member = jsRefCall(ref, hints);
+  if (!member) return undefined;
+  const original = bindings.get(name)?.variants[0];
+  const surfaceName = `__call.${ref.key}(${callHintKey(args)})`;
+  addVariants(
+    bindings,
+    surfaceName,
+    original?.memberName ?? "call",
+    original?.target ?? { kind: "JsReceiver", path: [] },
+    memberVariants(member),
+    original?.fallible ?? true,
+  );
+  const variant = selectVariant(bindings.get(surfaceName)?.variants ?? [], args);
+  if (!variant) return undefined;
+  selected.add(variant.internalName);
+  return {
+    callee: { kind: "Var", name: variant.internalName },
+    args,
+    variant,
+  };
+}
+
+export function callArgHintWithRefs(
+  arg: Expr,
+  refs: Map<string, JsTypeRef>,
+  objectAccess: Map<string, ObjectAccess>,
+): JsCallArgHint {
+  if (arg.kind === "Var") {
+    const direct = refs.get(arg.name);
+    if (direct) return { kind: "ref", ref: direct, type: jsRefTypeExpr(direct) };
+    const access = objectAccess.get(arg.name);
+    if (access?.kind === "ref") {
+      return { kind: "ref", ref: access.ref, type: access.receiverType };
+    }
+  }
+  return callArgHint(arg);
 }
 
 export function rememberObjectParams(
@@ -319,123 +370,41 @@ function isJsPromiseRef(ref: JsTypeRef): boolean {
     /\bPromise(?:Like)?\b/.test(ref.expr);
 }
 
-export function rememberLetRefs(
+export function rememberLetObjectAccess(
   decl: Decl,
   bindings: Map<string, FfiBinding>,
-  refs: Map<string, JsTypeRef>,
-  resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
-  passThroughRefs: Set<string> = new Set(),
 ) {
   if (decl.kind !== "LetDecl") return;
   for (const binding of decl.bindings) {
     if (binding.pattern.kind !== "PVar") continue;
-    const access = objectAccessForType(binding.annotation, importedTypeRefs);
+    const access = objectAccessForType(binding.annotation, importedTypeRefs) ??
+      objectAccessForExpr(binding.value, bindings, importedTypeRefs);
     if (access) objectAccess.set(binding.pattern.name, access);
-    const ref = resultRefForExpr(binding.value, bindings, resultRefs, passThroughRefs);
-    if (!ref) continue;
-    refs.set(binding.pattern.name, ref);
-    resultRefs.set(binding.pattern.name, ref);
   }
 }
 
-export function resultRefForExpr(
+function objectAccessForExpr(
   expr: Expr,
   bindings: Map<string, FfiBinding>,
-  resultRefs: Map<string, JsTypeRef>,
-  passThroughRefs: Set<string> = new Set(),
-): JsTypeRef | undefined {
-  if (expr.kind === "Var") return resultRefs.get(expr.name);
-  const callRef = variantFromCall(expr, bindings)?.resultRef;
-  if (callRef) return callRef;
-  if (expr.kind === "Call" && expr.callee.kind === "Var" && passThroughRefs.has(expr.callee.name)) {
-    return expr.args.length === 1
-      ? resultRefForExpr(expr.args[0], bindings, resultRefs, passThroughRefs)
-      : undefined;
-  }
-  if (expr.kind === "Pipe" && expr.right.kind === "Var" && passThroughRefs.has(expr.right.name)) {
-    return resultRefForExpr(expr.left, bindings, resultRefs, passThroughRefs);
-  }
-  if (
-    expr.kind === "Pipe" && expr.right.kind === "Call" && expr.right.callee.kind === "Var" &&
-    passThroughRefs.has(expr.right.callee.name)
-  ) {
-    return resultRefForExpr(expr.left, bindings, resultRefs, passThroughRefs);
-  }
-  if (expr.kind === "Match") {
-    const matchedRef = resultRefForExpr(expr.value, bindings, resultRefs, passThroughRefs);
-    if (!matchedRef) return undefined;
-    return matchPassThroughsOkPayload(expr) ? matchedRef : undefined;
-  }
-  return undefined;
-}
-
-export function letBindingPassesThroughOkPayload(decl: Decl): string[] {
-  if (decl.kind !== "LetDecl") return [];
-  return decl.bindings.flatMap((binding) => {
-    if (binding.pattern.kind !== "PVar") return [];
-    if (!lambdaPassesThroughOkPayload(binding.value)) return [];
-    return [binding.pattern.name];
-  });
-}
-
-function lambdaPassesThroughOkPayload(expr: Expr): boolean {
-  if (expr.kind !== "Lambda" || expr.params.length !== 1) return false;
-  const binder = paramBinder(expr.params[0]);
-  if (!binder) return false;
-  const body = expr.body.kind === "Block" && expr.body.items.length === 0
-    ? expr.body.result
-    : expr.body;
-  if (body.kind !== "Match" || body.value.kind !== "Var" || body.value.name !== binder) {
-    return false;
-  }
-  return matchPassThroughsOkPayload(body);
-}
-
-function variantFromCall(expr: Expr, bindings: Map<string, FfiBinding>): FfiVariant | undefined {
+  importedTypeRefs: Map<string, JsTypeRef>,
+): ObjectAccess | undefined {
   if (expr.kind !== "Call" || expr.callee.kind !== "Var") return undefined;
   const calleeName = expr.callee.name;
-  for (const binding of bindings.values()) {
-    const found = binding.variants.find((variant) => variant.internalName === calleeName);
-    if (found) return found;
-  }
-  return undefined;
+  const variant = [...bindings.values()]
+    .flatMap((binding) => binding.variants)
+    .find((item) => item.internalName === calleeName);
+  const result = variant ? callResultType(variant.type) : undefined;
+  return objectAccessForType(unwrapResult(result), importedTypeRefs);
 }
 
-function matchPassThroughsOkPayload(expr: Extract<Expr, { kind: "Match" }>): boolean {
-  return expr.arms.some((arm) => {
-    const bodyVar = passThroughVar(arm.body);
-    if (!bodyVar) return false;
-    return okPayloadBinders(arm.pattern).includes(bodyVar);
-  });
+function callResultType(type: TypeExpr): TypeExpr | undefined {
+  return type.kind === "TFn" ? type.result : type;
 }
 
-function passThroughVar(expr: Expr): string | undefined {
-  if (expr.kind === "Var") return expr.name;
-  if (expr.kind === "Block" && expr.items.length === 0 && expr.result.kind === "Var") {
-    return expr.result.name;
-  }
-  return undefined;
-}
-
-export function okPayloadBinders(pattern: Pattern): string[] {
-  if (pattern.kind !== "PCtor" || pattern.name.split(".").at(-1) !== "Ok") return [];
-  const payload = pattern.args[0];
-  return payload ? patternBinders(payload) : [];
-}
-
-function patternBinders(pattern: Pattern): string[] {
-  switch (pattern.kind) {
-    case "PVar":
-      return [pattern.name];
-    case "PTuple":
-      return pattern.items.flatMap(patternBinders);
-    case "PRecord":
-      return pattern.fields.flatMap((field) => patternBinders(field.pattern));
-    case "PCtor":
-      return pattern.args.flatMap(patternBinders);
-    default:
-      return [];
-  }
+function unwrapResult(type: TypeExpr | undefined): TypeExpr | undefined {
+  return type?.kind === "TName" && type.name === "Result" && type.args.length === 2
+    ? type.args[0]
+    : type;
 }

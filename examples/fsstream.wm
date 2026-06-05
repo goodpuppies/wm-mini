@@ -1,0 +1,37 @@
+from js.module("node:fs") import { createReadStream };
+from js.global("console") import * as console;
+
+let stream = createReadStream("examples/data.txt");
+
+let main = () => {
+  match(stream) {
+    Ok(s) => {
+      s :> .on("data", (chunk) => {
+        match(chunk.length) {
+          Ok(byteLength) => {
+            console.log("Received", byteLength, "bytes of data.");
+          },
+          Err(_) => {
+            console.error("Could not read chunk length");
+          },
+        };
+      });
+
+      s :> .on("error", (err) => {
+        let message = match(err.message) {
+          Ok(text) => { text },
+          Err(_) => { Panic("unknown error" )},
+        };
+
+        console.error("File read failed:", message);
+      });
+
+      s :> .on("close", () => {
+        console.log("Stream closed");
+      });
+    },
+    Err(_) => {
+      console.error("Could not create read stream");
+    },
+  }
+};

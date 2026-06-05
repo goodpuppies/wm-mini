@@ -5,12 +5,14 @@ import {
   jsGlobalMember,
   jsGlobalMembers,
   jsGlobalMemberTypeRef,
+  jsGlobalMemberValueRef,
   jsGlobalTypeRef,
   jsGlobalValueMember,
   jsGlobalValueRef,
   type JsMemberType,
   jsModuleMember,
   jsModuleMembers,
+  jsModuleMemberValueRef,
   jsModuleTypeRef,
   type JsTypeRef,
 } from "./reflect/types.ts";
@@ -79,6 +81,10 @@ export function collectFfiDecl(
     if (!member) continue;
     const localName = spec.alias ?? spec.name;
     const surfaceName = decl.clause.alias ? `${decl.clause.alias}.${localName}` : localName;
+    if (reflected) {
+      const ref = jsTargetMemberValueRef(decl.target, spec.name);
+      if (ref) importedRefs.set(surfaceName, ref);
+    }
     addVariants(
       bindings,
       surfaceName,
@@ -197,11 +203,17 @@ export function generatedJsImports(
 }
 
 export function generatedTypeAliases(importedTypeRefs: Map<string, JsTypeRef>): Decl[] {
-  return [...importedTypeRefs].map(([typeName, ref]) => ({
-    kind: "ForeignTypeDecl" as const,
-    name: typeName,
-    foreignKey: ref.key,
-  }));
+  return [...importedTypeRefs]
+    .filter(([typeName]) => isForeignTypeDeclName(typeName))
+    .map(([typeName, ref]) => ({
+      kind: "ForeignTypeDecl" as const,
+      name: typeName,
+      foreignKey: ref.key,
+    }));
+}
+
+export function isForeignTypeDeclName(name: string): boolean {
+  return /^[A-Za-z_$][\w$]*$/.test(name);
 }
 
 function namedJsImportDecl(
@@ -220,6 +232,12 @@ function jsTargetMembers(target: JsTarget) {
   if (target.kind === "JsGlobal") return jsGlobalMembers(target.path);
   if (target.kind === "JsModule") return jsModuleMembers(target.specifier);
   return [];
+}
+
+function jsTargetMemberValueRef(target: JsTarget, name: string): JsTypeRef | undefined {
+  if (target.kind === "JsGlobal") return jsGlobalMemberValueRef(target.path, name);
+  if (target.kind === "JsModule") return jsModuleMemberValueRef(target.specifier, name);
+  return undefined;
 }
 
 function jsTargetMember(target: JsTarget, name: string): JsMemberType | undefined {

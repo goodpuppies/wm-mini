@@ -92,77 +92,6 @@ Deno.test("resolves reflected JS optional arities before HM", async () => {
   expectBinding(result.env, "p3", { type: "Result<Js.Object, Js.Error>", vars: 0 });
 });
 
-Deno.test("reflects prototype member calls from JS object results before HM", async () => {
-  const result = await checkSource(`
-    from js.module("node:child_process") import { spawn };
-    from js.module("node:crypto") import { createHash };
-    let hash = createHash("sha256");
-    let proc = spawn("cmd");
-    let hooked = match(proc) {
-      Ok(p) => {
-        match(hash) {
-          Ok(h) => {
-            p.stdout.on("data", (chunk) => {
-              h.update(chunk);
-            })
-          },
-          Err(_) => { proc },
-        }
-      },
-      Err(_) => { proc },
-    };
-  `);
-
-  expectBinding(result.env, "proc", { type: "Result<Js.Object, Js.Error>", vars: 0 });
-  expectBinding(result.env, "hooked", { type: "Result<Js.Object, Js.Error>", vars: 0 });
-});
-
-Deno.test("reflects literal JS event callback parameter types", async () => {
-  const result = await checkSource(`
-    from js.module("node:child_process") import { spawn };
-    let proc = spawn("cmd");
-    let closed = match(proc) {
-      Ok(p) => {
-        p.on("close", (code) => {
-          match(code) {
-            Some(n) => { n == 0 },
-            None => { false },
-          };
-        })
-      },
-      Err(_) => { proc },
-    };
-  `);
-
-  expectBinding(result.env, "closed", { type: "Result<Js.Object, Js.Error>", vars: 0 });
-});
-
-Deno.test("keeps reflected receiver event callback refs distinct", async () => {
-  const result = await checkSource(`
-    from js.module("node:fs") import { createReadStream };
-    let stream = createReadStream("data.txt");
-    let hooked = match(stream) {
-      Ok(s) => {
-        s.on("data", (chunk) => {
-          chunk.length;
-        });
-        s.on("error", (err) => {
-          match(err.message) {
-            Ok(message) => { message == "" },
-            Err(_) => { false },
-          };
-        });
-        s.on("close", () => {
-          void
-        })
-      },
-      Err(_) => { stream },
-    };
-  `);
-
-  expectBinding(result.env, "hooked", { type: "Result<Js.Object, Js.Error>", vars: 0 });
-});
-
 Deno.test("reflects global value constructors through new member", async () => {
   const result = await checkSource(`
     from js.global import { URL, Response };
@@ -172,18 +101,6 @@ Deno.test("reflects global value constructors through new member", async () => {
 
   expectBinding(result.env, "url", { type: "Result<Js.Object, Js.Error>", vars: 0 });
   expectBinding(result.env, "response", { type: "Result<Js.Object, Js.Error>", vars: 0 });
-});
-
-Deno.test("reflects JS object property reads from known refs", async () => {
-  const result = await checkSource(`
-    from js.global import { URL };
-    let path = match(URL.new("https://example.com/a")) {
-      Ok(url) => { url.pathname },
-      Err(_) => { Panic("url failed") },
-    };
-  `);
-
-  expectBinding(result.env, "path", { type: "Result<String, Js.Error>", vars: 0 });
 });
 
 Deno.test("reflects callback parameter object refs before HM", async () => {

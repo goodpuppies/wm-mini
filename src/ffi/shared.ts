@@ -10,9 +10,6 @@ export type FfiElaboration = {
   module: Module;
   bindings: Map<string, FfiBinding>;
   foreignTypeRefs: Map<string, JsTypeRef>;
-  expressionRefs: Map<Expr, JsTypeRef>;
-  namedCallbackRefs: Map<string, JsTypeRef[]>;
-  passThroughRefs: Set<string>;
   selected: Set<string>;
 };
 
@@ -67,7 +64,8 @@ export function generatedReceiverJsImports(
     .flatMap((binding) => binding.variants)
     .filter((variant) =>
       selected.has(variant.internalName) &&
-      (variant.target.kind === "JsReceiver" || variant.target.kind === "JsConstructor")
+      (variant.target.kind === "JsReceiver" || variant.target.kind === "JsConstructor" ||
+        variant.internalName.startsWith("__ffi___call_"))
     );
   return variants.map((variant) => ({
     kind: "JsImportDecl" as const,
@@ -127,14 +125,11 @@ export function callHintKey(args: Expr[]): string {
 }
 
 export function dynamicReceiverArgType(arg: Expr, index: number): TypeExpr {
-  if (arg.kind !== "Lambda") return { kind: "TVar", name: `a${index}` };
+  if (arg.kind !== "Lambda") return name("Js.Value");
   return {
     kind: "TFn",
-    params: arg.params.map((_, paramIndex) => ({
-      kind: "TVar" as const,
-      name: `cb${index}_${paramIndex}`,
-    })),
-    result: { kind: "TVar", name: `cb${index}_result` },
+    params: arg.params.map(() => name("Js.Value")),
+    result: name("Js.Value"),
   };
 }
 
@@ -154,10 +149,14 @@ export function prependReceiver(
   return { ...type, params: [receiverType, ...type.params] };
 }
 
-export function selectVariant(variants: FfiVariant[], args: Expr[]): FfiVariant | undefined {
+export function selectVariant(
+  variants: FfiVariant[],
+  args: Expr[],
+  argTypes: (TypeExpr | undefined)[] = [],
+): FfiVariant | undefined {
   return variants
     .filter((candidate) => typeCallArity(candidate.type) === args.length)
-    .map((candidate) => ({ candidate, score: callScore(candidate, args) }))
+    .map((candidate) => ({ candidate, score: callScore(candidate, args, argTypes) }))
     .sort((left, right) => left.score - right.score)[0]?.candidate;
 }
 
@@ -168,17 +167,29 @@ export function ffiOverloadMessage(name: string, variants: FfiVariant[], args: E
   }`;
 }
 
-function callScore(candidate: FfiVariant, args: Expr[]): number {
+function callScore(
+  candidate: FfiVariant,
+  args: Expr[],
+  argTypes: (TypeExpr | undefined)[],
+): number {
   const type = candidate.type;
   if (type.kind !== "TFn") return Number.POSITIVE_INFINITY;
   return type.params.reduce(
-    (score, param, index) => score + argScore(param, args[index], candidate),
+    (score, param, index) => score + argScore(param, args[index], candidate, argTypes[index]),
     0,
   );
 }
 
-function argScore(expected: TypeExpr, arg: Expr, candidate: FfiVariant): number {
+function argScore(
+  expected: TypeExpr,
+  arg: Expr,
+  candidate: FfiVariant,
+  actualType?: TypeExpr,
+): number {
   const actual = literalType(arg);
+  const typeScore = actualType ? typeDistance(expected, actualType) : undefined;
+  if (typeScore !== undefined) return typeScore;
+  if (actualType) return 10;
   if (arg.kind === "Lambda") return expected.kind === "TFn" ? 0 : 8;
   if (!actual) return unknownArgScore(expected, candidate);
   if (expected.kind === "TName" && expected.name === actual) return 0;
@@ -187,12 +198,42 @@ function argScore(expected: TypeExpr, arg: Expr, candidate: FfiVariant): number 
   return 10;
 }
 
+function typeDistance(expected: TypeExpr, actual: TypeExpr): number | undefined {
+  if (expected.kind === "TName" && expected.name === "Js.Value") return 4;
+  if (expected.kind !== actual.kind) return undefined;
+  switch (expected.kind) {
+    case "TName":
+      if (actual.kind !== "TName" || expected.name !== actual.name) return undefined;
+      if (expected.args.length !== actual.args.length) return undefined;
+      return sumTypeDistance(expected.args, actual.args);
+    case "TTuple":
+      if (actual.kind !== "TTuple" || expected.items.length !== actual.items.length) return undefined;
+      return sumTypeDistance(expected.items, actual.items);
+    case "TFn":
+      if (actual.kind !== "TFn" || expected.params.length !== actual.params.length) return undefined;
+      return sumTypeDistance([...expected.params, expected.result], [...actual.params, actual.result]);
+    case "TVar":
+      return 3;
+  }
+}
+
+function sumTypeDistance(expected: TypeExpr[], actual: TypeExpr[]): number | undefined {
+  let score = 0;
+  for (let index = 0; index < expected.length; index++) {
+    const distance = typeDistance(expected[index], actual[index]);
+    if (distance === undefined) return undefined;
+    score += distance;
+  }
+  return score;
+}
+
 function unknownArgScore(expected: TypeExpr, candidate: FfiVariant): number {
   if (expected.kind !== "TName") return 2;
   if (candidate.target.kind === "JsConstructor") {
-    if (expected.name === "Js.Object") return 0;
-    if (expected.name === "Js.Value") return 1;
+    if (isConcreteForeignName(expected.name)) return 0;
     if (expected.name === "Js.Array" || expected.name === "Js.Promise") return 2;
+    if (expected.name === "Js.Object") return 3;
+    if (expected.name === "Js.Value") return 4;
   } else {
     if (expected.name === "Js.Array" || expected.name === "Js.Promise") return 0;
     if (expected.name === "Js.Object") return 1;
@@ -203,6 +244,21 @@ function unknownArgScore(expected: TypeExpr, candidate: FfiVariant): number {
   }
   return 2;
 }
+
+function isConcreteForeignName(typeName: string): boolean {
+  return /^[A-Za-z_$][\w$]*$/.test(typeName) &&
+    !builtInTypeNames.has(typeName) &&
+    !typeName.startsWith("Js.");
+}
+
+const builtInTypeNames = new Set([
+  "Bool",
+  "Number",
+  "Option",
+  "Result",
+  "String",
+  "Void",
+]);
 
 function literalType(expr: Expr): string | undefined {
   switch (expr.kind) {

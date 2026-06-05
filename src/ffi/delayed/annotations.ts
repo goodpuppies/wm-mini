@@ -7,10 +7,17 @@ export function rejectAnnotatedDynamicCallbacks(
   bindings: Map<string, FfiBinding>,
 ) {
   const annotatedLambdas = annotatedLambdaBindings(decls);
-  const variants = new Map<string, FfiVariant>();
+  const variants = new Map<string, { variant: FfiVariant; surfaceName: string }>();
   for (const binding of bindings.values()) {
-    for (const variant of binding.variants) variants.set(variant.internalName, variant);
-    if (binding.variants.length === 1) variants.set(binding.surfaceName, binding.variants[0]);
+    for (const variant of binding.variants) {
+      variants.set(variant.internalName, { variant, surfaceName: binding.surfaceName });
+    }
+    if (binding.variants.length === 1) {
+      variants.set(binding.surfaceName, {
+        variant: binding.variants[0],
+        surfaceName: binding.surfaceName,
+      });
+    }
   }
   const visit = (expr: Expr) => {
     switch (expr.kind) {
@@ -20,9 +27,9 @@ export function rejectAnnotatedDynamicCallbacks(
         expr.args.forEach(visit);
         return;
       case "Call": {
-        const variant = expr.callee.kind === "Var" ? variants.get(expr.callee.name) : undefined;
-        if (variant?.target.kind === "JsReceiver" && expr.callee.kind === "Var") {
-          const dynamic = expr.callee.name.includes("__dynamic");
+        const found = expr.callee.kind === "Var" ? variants.get(expr.callee.name) : undefined;
+        if (found?.variant.target.kind === "JsReceiver" && expr.callee.kind === "Var") {
+          const dynamic = found.surfaceName.startsWith("__dynamic.");
           if (dynamic) {
             expr.args.forEach((arg) => rejectAnnotatedCallbackArg(arg, annotatedLambdas));
           }

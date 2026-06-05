@@ -5,6 +5,7 @@ import {
   type ObjectAccess,
   objectReceiverCall,
   objectReceiverProperty,
+  reflectedFunctionCallCandidate,
   reflectedReceiverCallCandidate,
   reflectedReceiverProperty,
   rememberObjectParams,
@@ -33,10 +34,8 @@ export function rewriteExprCalls(
   bindings: Map<string, FfiBinding>,
   selected: Set<string>,
   refs: Map<string, JsTypeRef>,
-  resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
-  passThroughRefs: Set<string> = new Set(),
 ): Expr {
   switch (expr.kind) {
     case "FfiGet": {
@@ -48,6 +47,22 @@ export function rewriteExprCalls(
           refs,
         );
         if (reflected) return reflected;
+        const objectProperty = objectReceiverProperty(
+          `${expr.receiver.name}.${expr.path.join(".")}`,
+          bindings,
+          selected,
+          objectAccess,
+          activeRecordFields,
+        );
+        if (objectProperty) {
+          return objectProperty.kind === "FfiGet"
+            ? {
+              ...objectProperty,
+              receiver: expr.receiver,
+              node: objectProperty.node ?? expr.node,
+            }
+            : { ...objectProperty, node: objectProperty.node ?? expr.node };
+        }
       }
       return {
         ...expr,
@@ -56,7 +71,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -83,9 +97,50 @@ export function rewriteExprCalls(
               bindings,
               selected,
               refs,
-              resultRefs,
               objectAccess,
               importedTypeRefs,
+            ),
+          };
+        }
+        const objectReceiver = objectReceiverCall(
+          `${expr.receiver.name}.${expr.path.join(".")}`,
+          expr.args,
+          bindings,
+          selected,
+          objectAccess,
+          jsRefCallMember,
+        );
+        if (objectReceiver) {
+          if ("variant" in objectReceiver) {
+            return {
+              ...expr,
+              kind: "Call",
+              callee: objectReceiver.callee,
+              args: rewriteArgsWithVariant(
+                objectReceiver.args,
+                objectReceiver.variant,
+                bindings,
+                selected,
+                refs,
+                objectAccess,
+                importedTypeRefs,
+              ),
+            };
+          }
+          if (objectReceiver.kind !== "FfiCall") return objectReceiver;
+          return {
+            ...objectReceiver,
+            receiver: expr.receiver,
+            node: objectReceiver.node ?? expr.node,
+            args: objectReceiver.args.map((arg) =>
+              rewriteExprCalls(
+                arg,
+                bindings,
+                selected,
+                refs,
+                objectAccess,
+                importedTypeRefs,
+              )
             ),
           };
         }
@@ -97,7 +152,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -107,7 +161,6 @@ export function rewriteExprCalls(
             bindings,
             selected,
             refs,
-            resultRefs,
             objectAccess,
             importedTypeRefs,
           )
@@ -122,6 +175,29 @@ export function rewriteExprCalls(
     }
     case "Call": {
       if (expr.callee.kind === "Var") {
+        const reflectedFunction = reflectedFunctionCallCandidate(
+          expr.callee.name,
+          expr.args,
+          bindings,
+          selected,
+          refs,
+          objectAccess,
+        );
+        if (reflectedFunction) {
+          return {
+            ...expr,
+            callee: reflectedFunction.callee,
+            args: rewriteArgsWithVariant(
+              reflectedFunction.args,
+              reflectedFunction.variant,
+              bindings,
+              selected,
+              refs,
+              objectAccess,
+              importedTypeRefs,
+            ),
+          };
+        }
         const variants = bindings.get(expr.callee.name)?.variants ?? [];
         const variant = variants.length > 1 || expr.callee.name.includes(".")
           ? selectVariant(variants, expr.args)
@@ -134,7 +210,6 @@ export function rewriteExprCalls(
             bindings,
             selected,
             refs,
-            resultRefs,
             objectAccess,
             importedTypeRefs,
           );
@@ -164,7 +239,6 @@ export function rewriteExprCalls(
               bindings,
               selected,
               refs,
-              resultRefs,
               objectAccess,
               importedTypeRefs,
             ),
@@ -189,7 +263,6 @@ export function rewriteExprCalls(
                 bindings,
                 selected,
                 refs,
-                resultRefs,
                 objectAccess,
                 importedTypeRefs,
               ),
@@ -198,13 +271,13 @@ export function rewriteExprCalls(
           if (objectReceiver.kind === "FfiCall") {
             return {
               ...objectReceiver,
+              node: objectReceiver.node ?? expr.node,
               args: objectReceiver.args.map((arg) =>
                 rewriteExprCalls(
                   arg,
                   bindings,
                   selected,
                   refs,
-                  resultRefs,
                   objectAccess,
                   importedTypeRefs,
                 )
@@ -220,7 +293,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         )
@@ -230,7 +302,6 @@ export function rewriteExprCalls(
         bindings,
         selected,
         refs,
-        resultRefs,
         objectAccess,
         importedTypeRefs,
       );
@@ -245,7 +316,6 @@ export function rewriteExprCalls(
             bindings,
             selected,
             refs,
-            resultRefs,
             objectAccess,
             importedTypeRefs,
           )
@@ -261,7 +331,6 @@ export function rewriteExprCalls(
             bindings,
             selected,
             refs,
-            resultRefs,
             objectAccess,
             importedTypeRefs,
           ),
@@ -277,7 +346,6 @@ export function rewriteExprCalls(
             bindings,
             selected,
             refs,
-            resultRefs,
             objectAccess,
             importedTypeRefs,
           ),
@@ -292,7 +360,6 @@ export function rewriteExprCalls(
             bindings,
             selected,
             refs,
-            resultRefs,
             objectAccess,
             importedTypeRefs,
           )
@@ -309,7 +376,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           localObjectAccess,
           importedTypeRefs,
         ),
@@ -323,7 +389,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -332,7 +397,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -341,7 +405,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -352,7 +415,6 @@ export function rewriteExprCalls(
         bindings,
         selected,
         refs,
-        resultRefs,
         objectAccess,
         importedTypeRefs,
       );
@@ -364,7 +426,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
           rewriteExprCalls,
@@ -379,7 +440,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -390,10 +450,8 @@ export function rewriteExprCalls(
         bindings,
         selected,
         refs,
-        resultRefs,
         objectAccess,
         importedTypeRefs,
-        passThroughRefs,
         rewriteDeclCalls,
         rewriteExprCalls,
       );
@@ -405,7 +463,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -414,7 +471,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -427,7 +483,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -440,7 +495,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -449,7 +503,6 @@ export function rewriteExprCalls(
           bindings,
           selected,
           refs,
-          resultRefs,
           objectAccess,
           importedTypeRefs,
         ),
@@ -465,7 +518,6 @@ function rewriteArgsWithVariant(
   bindings: Map<string, FfiBinding>,
   selected: Set<string>,
   refs: Map<string, JsTypeRef>,
-  resultRefs: Map<string, JsTypeRef>,
   objectAccess: Map<string, ObjectAccess>,
   importedTypeRefs: Map<string, JsTypeRef>,
 ): Expr[] {
@@ -476,7 +528,6 @@ function rewriteArgsWithVariant(
       bindings,
       selected,
       refsForCallbackArg(refs, arg, callbackRefs?.params),
-      resultRefs,
       objectAccess,
       importedTypeRefs,
     );

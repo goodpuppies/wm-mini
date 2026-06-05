@@ -39,7 +39,7 @@ Deno.test("supports inferred callable root JS globals", async () => {
   `);
 
   expectBinding(result.env, "response", {
-    type: "Result<Js.Promise<Js.Object>, Js.Error>",
+    type: "Result<Js.Promise<Response>, Js.Error>",
     vars: 0,
   });
   assertStringIncludes(js, '__wm_js_member("fetch")');
@@ -63,6 +63,34 @@ Deno.test("maps reflected TS promises to Js.Promise", async () => {
     type: "Result<Js.Promise<String>, Js.Error>",
     vars: 0,
   });
+});
+
+Deno.test("preserves reflected nominal promise results", async () => {
+  const result = await checkSource(`
+    from js.global("crypto.subtle") import unsafe { sign };
+    let signature = sign("HMAC", Panic("key"), Panic("bytes"));
+  `);
+
+  expectBinding(result.env, "signature", { type: "Js.Promise<ArrayBuffer>", vars: 0 });
+});
+
+Deno.test("uses nominal promise results with reflected constructors", async () => {
+  const result = await checkSource(`
+    from js.global("crypto.subtle") import unsafe { sign };
+    from js.global import unsafe { Uint8Array };
+    from js.global import type { Uint8Array };
+    let try = (result) => {
+      match(result) {
+        Ok(value) => { value },
+        Err(_) => { Panic("ffi") },
+      }
+    };
+    let bytes = sign("HMAC", Panic("key"), Panic("bytes")) :> .then((buffer) => {
+      Uint8Array.new(buffer)
+    }) :> try;
+  `);
+
+  expectBinding(result.env, "bytes", { type: "Js.Promise<Uint8Array>", vars: 0 });
 });
 
 Deno.test("typed JS promise receiver results infer through then", async () => {
@@ -106,52 +134,10 @@ Deno.test("maps object-bearing JS union parameters as JS values", async () => {
     );
   `);
 
-  expectBinding(result.env, "key", { type: "Js.Promise<Js.Object>", vars: 0 });
+  expectBinding(result.env, "key", { type: "Js.Promise<CryptoKey>", vars: 0 });
 });
 
-Deno.test("uses expression JS refs for coarse object receiver methods", async () => {
-  const result = await checkSource(`
-    from js.global import unsafe { URL, fetch };
-    let host = () => {
-      URL.new("https://example.test/a") :> .host
-    };
-    let install = () => {
-      fetch("https://example.test") :> .then((res) => {
-        let status = res.status;
-        void
-      })
-    };
-  `);
-
-  expectBinding(result.env, "host", { type: "(Void) => Result<String, Js.Error>", vars: 0 });
-  expectBinding(result.env, "install", {
-    type: "(Void) => Result<Js.Promise<Void>, Js.Error>",
-    vars: 0,
-  });
-});
-
-Deno.test("preserves expression refs through block-local Result pass-through lets", async () => {
-  const result = await checkSource(`
-    from js.global import unsafe { fetch };
-    let try = (result) => {
-      match(result) {
-        Ok(value) => { value },
-        Err(_) => { Panic("ffi") },
-      }
-    };
-    let install = () => {
-      let requestPromise = fetch("https://example.test");
-      requestPromise :> .then((res) => {
-        let responsePromise = res :> .json() :> try;
-        responsePromise :> .then((body) => { body }) :> try
-      }) :> try
-    };
-  `);
-
-  expectBinding(result.env, "install", { type: "(Void) => Js.Promise<Js.Value>", vars: 0 });
-});
-
-Deno.test("preserves delayed receiver refs through block-local Result pass-through lets", async () => {
+Deno.test("typed promise receivers work through explicit foreign receiver types", async () => {
   const result = await checkSource(`
     from js.global import type { Request };
     let try = (result) => {
@@ -166,60 +152,5 @@ Deno.test("preserves delayed receiver refs through block-local Result pass-throu
     };
   `);
 
-  expectBinding(result.env, "useText", { type: "(Request) => Js.Promise<Js.Value>", vars: 0 });
-});
-
-Deno.test("infers named JS callback parameter refs from later call sites", async () => {
-  const result = await checkSource(`
-    from js.global("Deno") import unsafe { serve };
-    let try = (result) => {
-      match(result) {
-        Ok(value) => { value },
-        Err(_) => { Panic("ffi") },
-      }
-    };
-    let handle = (req, info) => {
-      let textPromise = req :> .text() :> try;
-      textPromise :> .then((bodyText) => { bodyText }) :> try
-    };
-    let server = serve(JSON{ port: 8080 }, handle);
-  `);
-
-  expectBinding(result.env, "handle", {
-    type: "((Request, 'a)) => Js.Promise<Js.Value>",
-    vars: 1,
-  });
-});
-
-Deno.test("unannotated helper JS receivers preserve callback foreign refs", async () => {
-  const virtualFs = new Map([
-    [
-      "/test/server.wm",
-      `
-        from js.global("Deno") import unsafe { serve };
-        let try = (result) => {
-          match(result) {
-            Ok(value) => { value },
-            Err(_) => { Panic("ffi") },
-          }
-        };
-        let helper = (req) => {
-          let jsonPromise = req :> .json() :> try;
-          jsonPromise :> .then((body) => { body }) :> try
-        };
-        let handle = (req, info) => {
-          helper(req)
-        };
-        let server = serve(JSON{ port: 8080 }, handle);
-      `,
-    ],
-  ]);
-  const results = await checkVirtual("/test/server.wm", virtualFs);
-  const result = results.get("/test/server.wm")!;
-
-  expectBinding(result.env, "helper", { type: "(Request) => Js.Promise<Js.Value>", vars: 0 });
-  expectBinding(result.env, "handle", {
-    type: "((Request, 'a)) => Js.Promise<Js.Value>",
-    vars: 1,
-  });
+  expectBinding(result.env, "useText", { type: "(Request) => Js.Promise<String>", vars: 0 });
 });

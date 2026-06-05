@@ -1,5 +1,5 @@
 import { checkFile, compileFile, ModuleAnalysisError } from "./compiler.ts";
-import { formatError } from "./diagnostics.ts";
+import { formatDiagnosticError, formatError, FrontendDiagnosticError } from "./diagnostics.ts";
 import { ParseError } from "./parser.ts";
 import { runFile } from "./run.ts";
 
@@ -19,9 +19,13 @@ if (import.meta.main) {
             error.originalError.span,
           ),
         );
+      } else if (error.originalError instanceof FrontendDiagnosticError) {
+        console.error(formatDiagnosticError(error.originalError, error.path, error.source));
       } else {
         console.error(formatError(error.message, error.path, error.source, undefined));
       }
+    } else if (error instanceof FrontendDiagnosticError) {
+      console.error(formatDiagnosticError(error, undefined, undefined));
     } else {
       console.error(error instanceof Error ? error.message : String(error));
     }

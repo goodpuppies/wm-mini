@@ -29,7 +29,7 @@ src/ffi/
     type_refs.ts       # JS reflection metadata shapes
 
   receiver/
-    receiver.ts        # receiver refs, object access state, ref pass-through recognition
+    receiver.ts        # receiver refs and object access state
     rewrite_expr.ts    # pre-HM expression rewrite for reflected receivers
     rewrite_blocks.ts  # block/match rewrite helpers with local ref scopes
     rewrite_decl.ts    # declaration rewrite helper
@@ -37,7 +37,7 @@ src/ffi/
   delayed/
     delayed.ts         # post-HM delayed receiver resolution entry point
     annotations.ts     # rejects callback annotations used as dynamic casts
-    bindings.ts        # delayed ref bookkeeping and generated foreign decls
+    bindings.ts        # generated import insertion and foreign decl helpers
     materialize.ts     # turns delayed receiver access into generated FFI calls
     receiver_models.ts # built-in Js.Array/Js.Promise/foreign receiver models
     types.ts           # delayed resolver options
@@ -55,16 +55,34 @@ Refs are most valuable for coarse opaque values: DOM objects, responses, request
 headers, promises, arrays, and imported nominal JS types. Primitive values do not need much ref
 machinery because their receiver surfaces are small and can be modeled directly.
 
-The intended invariant is:
+The current model deliberately does not propagate refs through arbitrary expressions. Earlier
+versions tried to remember that a value had a JS ref after passing through `Result` unwrapping,
+block-local lets, helper functions such as `try`, and match arms. That made the webhook port easier
+in the short term, but it coupled JS identity tracking to expression shapes instead of HM types.
 
-> If a value originated from reflected JS and passes through ordinary Workman code without changing
-> identity, its ref should pass through too.
+The supported sources of JS reflection metadata are now narrower:
 
-The current implementation does not fully satisfy that invariant. It has specific recognition for
-`Ok`-payload pass-through helpers so functions like `try` can preserve refs. That was useful for the
-webhook work, but it is too shape-specific. We should either make ref propagation genuinely general
-for identity-preserving functions or stop pretending arbitrary helpers preserve refs and force a
-clearer user-level boundary.
+- imported JS values and namespaces before HM;
+- type-only JS imports such as `Request`, `Response`, `URL`, or `AbortController`;
+- explicit `Js.Object` annotations for coarse dynamic access;
+- inline callback parameters while elaborating the reflected call that introduces them;
+- delayed receiver resolution after HM constrains a receiver to a known foreign, array, promise, or
+  primitive type.
+
+If a constructor or JS call returns a coarse `Js.Object` but user code wants to keep using it as a
+specific JS object, the user should import the foreign type and bind/assert the value at that type:
+
+```wm
+from js.global import unsafe { URL };
+from js.global import type { URL };
+
+let url: URL = URL.new("https://example.test/a");
+let path = url :> .pathname :> try;
+```
+
+This is the same broad shape as the JSON policy: once a dynamic value is asserted into a Workman or
+foreign type, ordinary field/member access should work from that type. The compiler should not keep
+hidden expression-side state to recover a type that HM itself has lost.
 
 ## Dynamic Receivers
 
@@ -123,11 +141,9 @@ standard-library model inside the compiler.
 
 Highest value:
 
-1. Replace shape-specific `try`/`Ok` ref pass-through with either general identity-preserving ref
-   propagation or an explicit basis/helper convention.
-2. Replace dynamic receiver fresh type variables with coarse dynamic results plus explicit
+1. Replace dynamic receiver fresh type variables with coarse dynamic results plus explicit
    assertions.
-3. Keep moving policy decisions out of the recursive rewrite functions and into small modules with
+2. Keep moving policy decisions out of the recursive rewrite functions and into small modules with
    clear names.
 
 Lower value:

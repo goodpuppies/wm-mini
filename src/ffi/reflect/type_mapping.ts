@@ -67,12 +67,18 @@ export function typeExprFromTsType(
   ) {
     return name("String");
   }
+  if (position === "param" && checker.typeToString(type) === "ArrayBuffer") {
+    return name("ArrayBuffer");
+  }
   if (
     position === "param" &&
     /\b(ArrayBuffer|ArrayBufferLike|BufferSource)\b/.test(checker.typeToString(type))
   ) {
     return name("Js.Object");
   }
+  if (isTsType(checker, type, "number")) return name("Number");
+  if (isTsType(checker, type, "string")) return name("String");
+  if (isTsType(checker, type, "boolean")) return name("Bool");
   const awaited = awaitedTypeArgument(checker, type, position);
   if (awaited) return awaited;
   const nullish = nullishUnionParts(type);
@@ -111,21 +117,33 @@ export function typeExprFromTsType(
     }
     return varType(type.symbol?.getName() ?? "a");
   }
-  if (isTsType(checker, type, "number")) return name("Number");
-  if (isTsType(checker, type, "string")) return name("String");
-  if (isTsType(checker, type, "boolean")) return name("Bool");
   if (type.flags & ts.TypeFlags.StringLiteral) return name("String");
   if (type.flags & ts.TypeFlags.NumberLiteral) return name("Number");
+  if (type.flags & ts.TypeFlags.BooleanLiteral) return name("Bool");
   if (type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) return name("Void");
   const promised = promiseElementType(checker, type, position);
   if (promised) return { kind: "TName", name: "Js.Promise", args: [promised] };
-  if (isNumericTypedArray(checker, type)) {
+  if (position === "param" && isNumericTypedArray(checker, type)) {
     return { kind: "TName", name: "Js.Array", args: [name("Number")] };
   }
   const arrayElement = arrayElementType(checker, type, position);
   if (arrayElement) return { kind: "TName", name: "Js.Array", args: [arrayElement] };
+  const nominal = nominalObjectTypeName(checker, type);
+  if (position === "result" && nominal) return name(nominal);
   if (position === "result" && isObjectLike(type)) return name("Js.Object");
   return name("Js.Value");
+}
+
+export function nominalObjectTypeName(checker: ts.TypeChecker, type: ts.Type): string | undefined {
+  if (!(type.flags & ts.TypeFlags.Object)) return undefined;
+  const symbol = type.aliasSymbol ?? type.getSymbol();
+  const typeName = symbol?.getName();
+  if (!typeName || typeName === "__type" || typeName === "Object") return undefined;
+  if (!/^[A-Za-z_$][\w$]*$/.test(typeName)) return undefined;
+  if (isNumericTypedArrayName(typeName)) return typeName;
+  const text = checker.typeToString(type);
+  if (/[<>{}&|()[\],]/.test(text)) return undefined;
+  return typeName;
 }
 
 function awaitedTypeArgument(
@@ -134,6 +152,13 @@ function awaitedTypeArgument(
   position: "param" | "result",
 ): TypeExpr | undefined {
   const text = checker.typeToString(type);
+  if (/^Awaited<.+>$/.test(text)) {
+    const awaited = (checker as { getAwaitedType?: (type: ts.Type) => ts.Type | undefined })
+      .getAwaitedType?.(type);
+    if (awaited && awaited !== type) {
+      return typeExprFromTsType(checker, awaited, position) ?? name("Js.Value");
+    }
+  }
   const match = /^Awaited<([A-Za-z_][A-Za-z0-9_]*)>$/.exec(text);
   if (match) return varType(match[1]);
   if (!/^Awaited<.+>$/.test(text)) return undefined;
@@ -411,10 +436,12 @@ function promiseElementType(
 }
 
 function isNumericTypedArray(checker: ts.TypeChecker, type: ts.Type): boolean {
+  return isNumericTypedArrayName(checker.typeToString(type));
+}
+
+function isNumericTypedArrayName(name: string): boolean {
   return /\b(?:Uint8Array|Uint8ClampedArray|Uint16Array|Uint32Array|Int8Array|Int16Array|Int32Array|Float32Array|Float64Array)\b/
-    .test(
-      checker.typeToString(type),
-    );
+    .test(name);
 }
 
 function typeExprFromArrayElement(

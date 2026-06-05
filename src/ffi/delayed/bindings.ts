@@ -1,9 +1,8 @@
-import type { Decl, Param } from "../../ast.ts";
+import type { Decl } from "../../ast.ts";
 import { prune } from "../../types.ts";
-import type { ResolveOptions } from "./types.ts";
-import { type FfiElaboration, paramBinder } from "../shared.ts";
-import { resultRefForExpr } from "../receiver/receiver.ts";
+import { isForeignTypeDeclName } from "../imports.ts";
 import type { JsTypeRef } from "../reflect/types.ts";
+import type { ResolveOptions } from "./types.ts";
 
 export function generatedImportInsertionIndex(decls: Decl[]): number {
   let lastTypeDecl = -1;
@@ -44,41 +43,44 @@ export function generatedForeignDeclsForOverrides(
   return generated;
 }
 
-export function rememberDelayedLetRefs(
-  decl: Decl,
-  ffi: FfiElaboration,
-  valueRefs: Map<string, JsTypeRef>,
-) {
-  if (decl.kind !== "LetDecl") return;
-  for (const binding of decl.bindings) {
-    if (binding.pattern.kind !== "PVar") continue;
-    if (binding.annotation?.kind === "TName" && binding.annotation.name === "Js.Object") continue;
-    const ref = resultRefForExpr(binding.value, ffi.bindings, valueRefs, ffi.passThroughRefs);
-    if (ref) valueRefs.set(binding.pattern.name, ref);
+export function generatedForeignDeclsForRefs(
+  decls: Decl[],
+  foreignTypeRefs: Map<string, JsTypeRef>,
+): Decl[] {
+  const existing = existingForeignDeclKeys(decls);
+  const localTypes = existingTypeNames(decls);
+  const generated: Decl[] = [];
+  for (const [name, ref] of foreignTypeRefs) {
+    if (!isForeignTypeDeclName(name)) continue;
+    if (localTypes.has(name)) continue;
+    const key = `${name}:${ref.key}`;
+    if (existing.has(key)) continue;
+    existing.add(key);
+    generated.push({
+      kind: "ForeignTypeDecl",
+      name,
+      foreignKey: ref.key,
+    });
   }
+  return generated;
 }
 
-export function delayedValueRefsForBinding(
-  binding: Extract<Decl, { kind: "LetDecl" }>["bindings"][number],
-  ffi: FfiElaboration,
-  valueRefs: Map<string, JsTypeRef>,
-): Map<string, JsTypeRef> {
-  if (binding.pattern.kind !== "PVar" || binding.value.kind !== "Lambda") return valueRefs;
-  const callbackRefs = ffi.namedCallbackRefs.get(binding.pattern.name);
-  if (!callbackRefs?.length) return valueRefs;
-  const localValueRefs = new Map(valueRefs);
-  rememberLambdaParamRefs(binding.value.params, callbackRefs, localValueRefs);
-  return localValueRefs;
+function existingForeignDeclKeys(decls: Decl[]): Set<string> {
+  return new Set(
+    decls
+      .filter((decl) => decl.kind === "ForeignTypeDecl")
+      .map((decl) => `${decl.name}:${decl.foreignKey ?? ""}`),
+  );
 }
 
-function rememberLambdaParamRefs(
-  params: Param[],
-  refs: JsTypeRef[],
-  valueRefs: Map<string, JsTypeRef>,
-) {
-  for (let index = 0; index < params.length; index++) {
-    const binder = paramBinder(params[index]);
-    const ref = refs[index];
-    if (binder && ref) valueRefs.set(binder, ref);
+function existingTypeNames(decls: Decl[]): Set<string> {
+  const names = new Set<string>();
+  for (const decl of decls) {
+    if (
+      decl.kind === "ForeignTypeDecl" || decl.kind === "RecordDecl" || decl.kind === "TypeDecl"
+    ) {
+      names.add(decl.name);
+    }
   }
+  return names;
 }

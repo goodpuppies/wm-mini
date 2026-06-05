@@ -1,32 +1,26 @@
 import type { Decl, Expr, TypeExpr } from "../../ast.ts";
 import { diagnosticError } from "../../diagnostics.ts";
 import type { InferResult } from "../../infer.ts";
-import { show } from "../../types.ts";
+import { prune, show } from "../../types.ts";
 import { rejectAnnotatedDynamicCallbacks } from "./annotations.ts";
 import {
-  delayedValueRefsForBinding,
   generatedForeignDeclsForOverrides,
+  generatedForeignDeclsForRefs,
   generatedImportInsertionIndex,
-  rememberDelayedLetRefs,
 } from "./bindings.ts";
 import { materializeReceiverCall, materializeReceiverProperty } from "./materialize.ts";
 import {
   expressionRefForReceiver,
-  ffiCallPromiseElement,
   foreignReceiver,
   foreignTypeRefLookup,
   inferredType,
   isJsObjectTy,
-  jsArrayMember,
   jsArrayReceiver,
-  jsPromiseMember,
   jsPromiseReceiver,
   jsPromiseReceiverTypeExpr,
-  promiseCallbackResultType,
   receiverTypeForRef,
   typeExprKey,
   tyToTypeExpr,
-  withCallbackParamRefs,
 } from "./receiver_models.ts";
 import type { ResolveOptions } from "./types.ts";
 import {
@@ -39,27 +33,37 @@ import {
   isDecl,
   name,
 } from "../shared.ts";
-import { jsRefCallMember, jsRefMember, jsRefTypeExpr, type JsTypeRef } from "../reflect/types.ts";
+import {
+  jsRefCallMember,
+  jsRefMember,
+  jsRefTypeExpr,
+  jsTypeExprValueRef,
+  type JsCallArgHint,
+  type JsTypeRef,
+} from "../reflect/types.ts";
+import { typeExprKey as reflectTypeExprKey } from "../reflect/ts_type_expr.ts";
 
 export function resolveDelayedFfiElaboration(
   ffi: FfiElaboration,
   result: InferResult,
   options: ResolveOptions = {},
 ): FfiElaboration {
-  rejectAnnotatedDynamicCallbacks(ffi.module.decls, ffi.bindings);
   const selected = new Set<string>();
   const valueRefs = new Map<string, JsTypeRef>();
   const decls: Decl[] = [];
   for (const decl of ffi.module.decls) {
     const resolved = resolveDelayedDecl(decl, ffi, result, selected, options, valueRefs);
-    rememberDelayedLetRefs(resolved, ffi, valueRefs);
     decls.push(resolved);
   }
   const module = {
     ...ffi.module,
     decls,
   };
-  const foreignDecls = generatedForeignDeclsForOverrides(module.decls, options.receiverTypes);
+  rejectAnnotatedDynamicCallbacks(module.decls, ffi.bindings);
+  const foreignDecls = [
+    ...generatedForeignDeclsForRefs(module.decls, ffi.foreignTypeRefs),
+    ...generatedForeignDeclsForOverrides(module.decls, options.receiverTypes),
+  ];
   const imports = generatedReceiverJsImports(ffi.bindings, selected);
   const prefixLength = generatedImportInsertionIndex(module.decls);
   return {
@@ -79,6 +83,389 @@ export function resolveDelayedFfiElaboration(
   };
 }
 
+export function contextualizeDelayedCallbacks(
+  ffi: FfiElaboration,
+  result: InferResult,
+): FfiElaboration {
+  const arities = namedLambdaArities(ffi.module.decls);
+  const contexts = collectNamedCallbackContexts(ffi.module.decls, result, arities);
+  return {
+    ...ffi,
+    module: {
+      ...ffi.module,
+      decls: ffi.module.decls.map((decl) =>
+        contextualizeDecl(decl, result, arities, contexts, ffi.bindings)
+      ),
+    },
+  };
+}
+
+function collectNamedCallbackContexts(
+  decls: Decl[],
+  result: InferResult,
+  arities: Map<string, number>,
+): Map<string, TypeExpr[]> {
+  const contexts = new Map<string, TypeExpr[]>();
+  const visitDecl = (decl: Decl) => {
+    if (decl.kind !== "LetDecl") return;
+    for (const binding of decl.bindings) visitExpr(binding.value);
+  };
+  const visitExpr = (expr: Expr) => {
+    switch (expr.kind) {
+      case "FfiCall":
+        collectFfiCallCallbackContexts(expr, result, arities, contexts, new Map());
+        visitExpr(expr.receiver);
+        expr.args.forEach(visitExpr);
+        return;
+      case "Call":
+        visitExpr(expr.callee);
+        expr.args.forEach(visitExpr);
+        return;
+      case "Tuple":
+      case "JsonArray":
+        expr.items.forEach(visitExpr);
+        return;
+      case "Record":
+      case "JsonObject":
+        expr.fields.forEach((field) => visitExpr(field.value));
+        return;
+      case "Lambda":
+        visitExpr(expr.body);
+        return;
+      case "If":
+        visitExpr(expr.cond);
+        visitExpr(expr.thenExpr);
+        visitExpr(expr.elseExpr);
+        return;
+      case "Match":
+        visitExpr(expr.value);
+        expr.arms.forEach((arm) => visitExpr(arm.body));
+        return;
+      case "Panic":
+        visitExpr(expr.message);
+        return;
+      case "Block":
+        for (const item of expr.items) {
+          if (isDecl(item)) visitDecl(item);
+          else visitExpr(item);
+        }
+        visitExpr(expr.result);
+        return;
+      case "Binary":
+        visitExpr(expr.left);
+        visitExpr(expr.right);
+        return;
+      case "Unary":
+        visitExpr(expr.value);
+        return;
+      case "Pipe":
+        visitExpr(expr.left);
+        visitExpr(expr.right);
+        return;
+      case "FfiGet":
+        visitExpr(expr.receiver);
+        return;
+      case "Int":
+      case "Float":
+      case "String":
+      case "Bool":
+      case "Void":
+      case "Var":
+        return;
+    }
+  };
+  decls.forEach(visitDecl);
+  return contexts;
+}
+
+function collectFfiCallCallbackContexts(
+  expr: Extract<Expr, { kind: "FfiCall" }>,
+  result: InferResult,
+  arities: Map<string, number>,
+  contexts: Map<string, TypeExpr[]>,
+  localTypes: Map<string, TypeExpr>,
+) {
+  for (const callback of callbackParamTypesForFfiCall(expr, result, arities, localTypes)) {
+    const arg = expr.args[callback.argIndex];
+    if (arg?.kind !== "Var") continue;
+    if (callback.params.length) contexts.set(arg.name, callback.params);
+  }
+}
+
+function callbackParamTypesForFfiCall(
+  expr: Extract<Expr, { kind: "FfiCall" }>,
+  result: InferResult,
+  arities: Map<string, number>,
+  localTypes: Map<string, TypeExpr> = new Map(),
+): { argIndex: number; params: TypeExpr[] }[] {
+  const localReceiverType = expr.receiver.kind === "Var" ? localTypes.get(expr.receiver.name) : undefined;
+  const receiverType = localReceiverType ? undefined : inferredType(result, expr.receiver);
+  const array = localReceiverType
+    ? jsArrayReceiverTypeExpr(localReceiverType)
+    : jsArrayReceiver(receiverType);
+  const promise = localReceiverType
+    ? jsPromiseReceiverTypeExpr(localReceiverType)
+    : jsPromiseReceiver(receiverType);
+  const ref = array
+    ? jsTypeExprValueRef(`array:${reflectTypeExprKey(array.type)}`, array.type)
+    : promise
+    ? jsTypeExprValueRef(`promise:${reflectTypeExprKey(promise.type)}`, promise.type)
+    : undefined;
+  if (!ref) return [];
+  const member = jsRefCallMember(
+    ref,
+    expr.path,
+    expr.args.map((arg) => callArgHintFromNamedArity(arg, arities)),
+  );
+  return (member?.variants?.[0]?.callbackParamRefs ?? []).map((callback) => ({
+    argIndex: callback.argIndex,
+    params: callback.params.map((ref) => ref.type).filter((type): type is TypeExpr => !!type),
+  }));
+}
+
+function callArgHintFromNamedArity(
+  expr: Expr,
+  arities: Map<string, number>,
+): JsCallArgHint {
+  if (expr.kind === "Var") {
+    const arity = arities.get(expr.name);
+    if (arity !== undefined) return { kind: "function", arity };
+  }
+  return callArgHint(expr);
+}
+
+function namedLambdaArities(decls: Decl[]): Map<string, number> {
+  const arities = new Map<string, number>();
+  const visitDecl = (decl: Decl) => {
+    if (decl.kind !== "LetDecl") return;
+    for (const binding of decl.bindings) {
+      if (binding.pattern.kind === "PVar" && binding.value.kind === "Lambda") {
+        arities.set(binding.pattern.name, binding.value.params.length);
+      }
+      visitExpr(binding.value);
+    }
+  };
+  const visitExpr = (expr: Expr) => {
+    if (expr.kind !== "Block") return;
+    for (const item of expr.items) if (isDecl(item)) visitDecl(item);
+  };
+  decls.forEach(visitDecl);
+  return arities;
+}
+
+function contextualizeDecl(
+  decl: Decl,
+  result: InferResult,
+  arities: Map<string, number>,
+  contexts: Map<string, TypeExpr[]>,
+  bindings: FfiElaboration["bindings"],
+): Decl {
+  if (decl.kind !== "LetDecl") return decl;
+  return {
+    ...decl,
+    bindings: decl.bindings.map((binding) => {
+      const value = contextualizeExpr(binding.value, result, arities, new Map(), bindings);
+      if (binding.pattern.kind !== "PVar" || binding.value.kind !== "Lambda") return binding;
+      const params = contexts.get(binding.pattern.name);
+      if (!params) return { ...binding, value };
+      return {
+        ...binding,
+        value: {
+          ...value as Extract<Expr, { kind: "Lambda" }>,
+          params: (value as Extract<Expr, { kind: "Lambda" }>).params.map((param, index) => ({
+            ...param,
+            annotation: param.annotation ?? params[index],
+          })),
+        },
+      };
+    }),
+  };
+}
+
+function contextualizeExpr(
+  expr: Expr,
+  result: InferResult,
+  arities: Map<string, number>,
+  localTypes: Map<string, TypeExpr> = new Map(),
+  bindings: FfiElaboration["bindings"] = new Map(),
+): Expr {
+  switch (expr.kind) {
+    case "FfiCall": {
+      const callbackParams = new Map(
+        callbackParamTypesForFfiCall(expr, result, arities, localTypes).map((callback) => [
+          callback.argIndex,
+          callback.params,
+        ]),
+      );
+      return {
+        ...expr,
+        receiver: contextualizeExpr(expr.receiver, result, arities, localTypes, bindings),
+        args: expr.args.map((arg, index) =>
+          contextualizeCallbackArg(arg, callbackParams.get(index), result, arities, localTypes, bindings)
+        ),
+      };
+    }
+    case "FfiGet":
+      return { ...expr, receiver: contextualizeExpr(expr.receiver, result, arities, localTypes, bindings) };
+    case "Call":
+      return {
+        ...expr,
+        callee: contextualizeExpr(expr.callee, result, arities, localTypes, bindings),
+        args: expr.args.map((arg) => contextualizeExpr(arg, result, arities, localTypes, bindings)),
+      };
+    case "Tuple":
+      return {
+        ...expr,
+        items: expr.items.map((item) => contextualizeExpr(item, result, arities, localTypes, bindings)),
+      };
+    case "Record":
+      return {
+        ...expr,
+        fields: expr.fields.map((field) => ({
+          ...field,
+          value: contextualizeExpr(field.value, result, arities, localTypes, bindings),
+        })),
+      };
+    case "JsonObject":
+      return {
+        ...expr,
+        fields: expr.fields.map((field) => ({
+          ...field,
+          value: contextualizeExpr(field.value, result, arities, localTypes, bindings),
+        })),
+      };
+    case "JsonArray":
+      return {
+        ...expr,
+        items: expr.items.map((item) => contextualizeExpr(item, result, arities, localTypes, bindings)),
+      };
+    case "Lambda":
+      return { ...expr, body: contextualizeExpr(expr.body, result, arities, new Map(localTypes), bindings) };
+    case "If":
+      return {
+        ...expr,
+        cond: contextualizeExpr(expr.cond, result, arities, localTypes, bindings),
+        thenExpr: contextualizeExpr(expr.thenExpr, result, arities, localTypes, bindings),
+        elseExpr: contextualizeExpr(expr.elseExpr, result, arities, localTypes, bindings),
+      };
+    case "Match":
+      return {
+        ...expr,
+        value: contextualizeExpr(expr.value, result, arities, localTypes, bindings),
+        arms: expr.arms.map((arm) => ({
+          ...arm,
+          body: contextualizeExpr(arm.body, result, arities, new Map(localTypes), bindings),
+        })),
+      };
+    case "Panic":
+      return { ...expr, message: contextualizeExpr(expr.message, result, arities, localTypes, bindings) };
+    case "Block": {
+      const blockTypes = new Map(localTypes);
+      const items = expr.items.map((item) => {
+        if (!isDecl(item)) return contextualizeExpr(item, result, arities, blockTypes, bindings);
+        const contextual = contextualizeDecl(item, result, arities, new Map(), bindings);
+        rememberLetTypes(item, result, blockTypes, bindings);
+        return contextual;
+      });
+      return {
+        ...expr,
+        items,
+        result: contextualizeExpr(expr.result, result, arities, blockTypes, bindings),
+      };
+    }
+    case "Binary":
+      return {
+        ...expr,
+        left: contextualizeExpr(expr.left, result, arities, localTypes, bindings),
+        right: contextualizeExpr(expr.right, result, arities, localTypes, bindings),
+      };
+    case "Unary":
+      return { ...expr, value: contextualizeExpr(expr.value, result, arities, localTypes, bindings) };
+    case "Pipe":
+      return {
+        ...expr,
+        left: contextualizeExpr(expr.left, result, arities, localTypes, bindings),
+        right: contextualizeExpr(expr.right, result, arities, localTypes, bindings),
+      };
+    case "Int":
+    case "Float":
+    case "String":
+    case "Bool":
+    case "Void":
+    case "Var":
+      return expr;
+  }
+}
+
+function contextualizeCallbackArg(
+  arg: Expr,
+  params: TypeExpr[] | undefined,
+  result: InferResult,
+  arities: Map<string, number>,
+  localTypes: Map<string, TypeExpr>,
+  bindings: FfiElaboration["bindings"],
+): Expr {
+  if (arg.kind !== "Lambda" || !params) {
+    return contextualizeExpr(arg, result, arities, localTypes, bindings);
+  }
+  return {
+    ...arg,
+    params: arg.params.map((param, index) => ({
+      ...param,
+      annotation: param.annotation ?? params[index],
+    })),
+    body: contextualizeExpr(arg.body, result, arities, new Map(localTypes), bindings),
+  };
+}
+
+function rememberLetTypes(
+  decl: Decl,
+  result: InferResult,
+  localTypes: Map<string, TypeExpr>,
+  bindings: FfiElaboration["bindings"],
+) {
+  if (decl.kind !== "LetDecl") return;
+  for (const binding of decl.bindings) {
+    if (binding.pattern.kind !== "PVar") continue;
+    const type = typeFromSelectedFfiCall(binding.value, bindings) ??
+      tyToOptionalTypeExpr(inferredType(result, binding.value));
+    if (type) localTypes.set(binding.pattern.name, type);
+  }
+}
+
+function typeFromSelectedFfiCall(
+  expr: Expr,
+  bindings: FfiElaboration["bindings"],
+): TypeExpr | undefined {
+  if (expr.kind !== "Call" || expr.callee.kind !== "Var") return undefined;
+  const calleeName = expr.callee.name;
+  const variant = [...bindings.values()]
+    .flatMap((binding) => binding.variants)
+    .find((variant) => variant.internalName === calleeName);
+  return unwrapResultTypeExpr(callResultTypeExpr(variant?.type));
+}
+
+function callResultTypeExpr(type: TypeExpr | undefined): TypeExpr | undefined {
+  return type?.kind === "TFn" ? type.result : type;
+}
+
+function unwrapResultTypeExpr(type: TypeExpr | undefined): TypeExpr | undefined {
+  return type?.kind === "TName" && type.name === "Result" && type.args.length === 2
+    ? type.args[0]
+    : type;
+}
+
+function tyToOptionalTypeExpr(type: ReturnType<typeof inferredType>): TypeExpr | undefined {
+  return type ? tyToTypeExpr(type) : undefined;
+}
+
+function jsArrayReceiverTypeExpr(type: TypeExpr | undefined): { element: TypeExpr; type: TypeExpr } | undefined {
+  if (type?.kind !== "TName" || type.name !== "Js.Array" || type.args.length !== 1) {
+    return undefined;
+  }
+  return { element: type.args[0], type };
+}
+
 function resolveDelayedDecl(
   decl: Decl,
   ffi: FfiElaboration,
@@ -90,13 +477,10 @@ function resolveDelayedDecl(
   if (decl.kind !== "LetDecl") return decl;
   return {
     ...decl,
-    bindings: decl.bindings.map((binding) => {
-      const bindingValueRefs = delayedValueRefsForBinding(binding, ffi, valueRefs);
-      return {
-        ...binding,
-        value: resolveDelayedExpr(binding.value, ffi, result, selected, options, bindingValueRefs),
-      };
-    }),
+    bindings: decl.bindings.map((binding) => ({
+      ...binding,
+      value: resolveDelayedExpr(binding.value, ffi, result, selected, options, valueRefs),
+    })),
   };
 }
 
@@ -183,7 +567,6 @@ function resolveDelayedExpr(
         const resolved = isDecl(item)
           ? resolveDelayedDecl(item, ffi, result, selected, options, localValueRefs)
           : resolveDelayedExpr(item, ffi, result, selected, options, localValueRefs);
-        if (isDecl(resolved)) rememberDelayedLetRefs(resolved, ffi, localValueRefs);
         return resolved;
       });
       return {
@@ -222,7 +605,7 @@ function resolveDelayedFfiGet(
   options: ResolveOptions,
   valueRefs: Map<string, JsTypeRef>,
 ): Expr {
-  const receiverType = options.receiverTypes?.get(expr) ?? result.types.get(expr.receiver);
+  const receiverType = options.receiverTypes?.get(expr) ?? inferredType(result, expr.receiver);
   const receiver = resolveDelayedExpr(expr.receiver, ffi, result, selected, options, valueRefs);
   const foreignTypeRefs = foreignTypeRefLookup(ffi.foreignTypeRefs, options.foreignTypeRefs);
   const foreign = receiverType ? foreignReceiver(receiverType, foreignTypeRefs) : undefined;
@@ -236,6 +619,7 @@ function resolveDelayedFfiGet(
         member,
         `__receiver.${foreign.ref.key}.${expr.path.join(".")}`,
         ffi.bindings,
+        ffi.foreignTypeRefs,
         selected,
       );
     }
@@ -245,7 +629,8 @@ function resolveDelayedFfiGet(
     );
   }
   const array = jsArrayReceiver(receiverType);
-  const arrayMember = array ? jsArrayMember(array, expr.path) : undefined;
+  const arrayRef = array ? jsTypeExprValueRef(`array:${reflectTypeExprKey(array.type)}`, array.type) : undefined;
+  const arrayMember = arrayRef ? jsRefMember(arrayRef, expr.path) : undefined;
   if (array && arrayMember) {
     return materializeReceiverProperty(
       receiver,
@@ -254,6 +639,7 @@ function resolveDelayedFfiGet(
       arrayMember,
       `__dynamic_array.${typeExprKey(array.type)}.${expr.path.join(".")}`,
       ffi.bindings,
+      ffi.foreignTypeRefs,
       selected,
     );
   }
@@ -268,6 +654,7 @@ function resolveDelayedFfiGet(
         member,
         `__receiver.${expressionRef.key}.${expr.path.join(".")}`,
         ffi.bindings,
+        ffi.foreignTypeRefs,
         selected,
       );
     }
@@ -286,9 +673,10 @@ function resolveDelayedFfiGet(
     receiver,
     expr.path,
     name("Js.Object"),
-    { name: expr.path.at(-1)!, type: { kind: "TVar", name: "a" } },
+    { name: expr.path.at(-1)!, type: name("Js.Value") },
     `__dynamic.${expr.path.join(".")}`,
     ffi.bindings,
+    ffi.foreignTypeRefs,
     selected,
   );
 }
@@ -301,7 +689,7 @@ function resolveDelayedFfiCall(
   options: ResolveOptions,
   valueRefs: Map<string, JsTypeRef>,
 ): Expr {
-  const receiverType = options.receiverTypes?.get(expr) ?? result.types.get(expr.receiver);
+  const receiverType = options.receiverTypes?.get(expr) ?? inferredType(result, expr.receiver);
   const receiver = resolveDelayedExpr(expr.receiver, ffi, result, selected, options, valueRefs);
   const foreignTypeRefs = foreignTypeRefLookup(ffi.foreignTypeRefs, options.foreignTypeRefs);
   const foreign = receiverType ? foreignReceiver(receiverType, foreignTypeRefs) : undefined;
@@ -332,7 +720,10 @@ function resolveDelayedFfiCall(
     );
   }
   const array = jsArrayReceiver(receiverType);
-  const arrayMember = array ? jsArrayMember(array, expr.path) : undefined;
+  const arrayRef = array ? jsTypeExprValueRef(`array:${reflectTypeExprKey(array.type)}`, array.type) : undefined;
+  const arrayMember = arrayRef
+    ? jsRefCallMember(arrayRef, expr.path, expr.args.map((arg) => callArgHintForReflection(arg, result)))
+    : undefined;
   if (array && arrayMember) {
     return materializeReceiverCall(
       receiver,
@@ -351,31 +742,24 @@ function resolveDelayedFfiCall(
   }
   const expressionRef = expressionRefForReceiver(expr.receiver, receiver, ffi, valueRefs);
   const promise = jsPromiseReceiver(receiverType);
-  const reflectedPromiseMember = promise && expressionRef
-    ? jsRefCallMember(expressionRef, expr.path, expr.args.map(callArgHint))
+  const promiseSyntheticRef = promise
+    ? jsTypeExprValueRef(`promise:${reflectTypeExprKey(promise.type)}`, promise.type)
     : undefined;
-  const promiseMember = promise
-    ? withCallbackParamRefs(
-      jsPromiseMember(
-        promise,
-        expr.path,
-        promiseCallbackResultType(expr.args[0], result),
-        ffiCallPromiseElement(inferredType(result, expr)),
-      ),
-      reflectedPromiseMember,
+  const promiseMember = promiseSyntheticRef
+    ? jsRefCallMember(
+      promiseSyntheticRef,
+      expr.path,
+      expr.args.map((arg) => callArgHintForReflection(arg, result)),
     )
     : undefined;
   if (promise && promiseMember) {
-    const callbackResult = promiseCallbackResultType(expr.args[0], result);
     return materializeReceiverCall(
       receiver,
       expr.path,
       expr.args,
       promise.type,
       promiseMember,
-      `__dynamic_promise.${typeExprKey(promise.type)}.${expr.path.join(".")}${
-        callbackResult ? `.${typeExprKey(tyToTypeExpr(callbackResult))}` : ""
-      }`,
+      `__dynamic_promise.${typeExprKey(promise.type)}.${expr.path.join(".")}`,
       ffi,
       result,
       selected,
@@ -386,31 +770,21 @@ function resolveDelayedFfiCall(
   }
   if (expressionRef) {
     const promiseRef = jsPromiseReceiverTypeExpr(jsRefTypeExpr(expressionRef));
-    const reflectedPromiseMember = promiseRef
-      ? jsRefCallMember(expressionRef, expr.path, expr.args.map(callArgHint))
-      : undefined;
     const promiseRefMember = promiseRef
-      ? withCallbackParamRefs(
-        jsPromiseMember(
-          promiseRef,
-          expr.path,
-          promiseCallbackResultType(expr.args[0], result),
-          ffiCallPromiseElement(inferredType(result, expr)),
-        ),
-        reflectedPromiseMember,
+      ? jsRefCallMember(
+        expressionRef,
+        expr.path,
+        expr.args.map((arg) => callArgHintForReflection(arg, result)),
       )
       : undefined;
     if (promiseRef && promiseRefMember) {
-      const callbackResult = promiseCallbackResultType(expr.args[0], result);
       return materializeReceiverCall(
         receiver,
         expr.path,
         expr.args,
         promiseRef.type,
         promiseRefMember,
-        `__dynamic_promise.${typeExprKey(promiseRef.type)}.${expr.path.join(".")}${
-          callbackResult ? `.${typeExprKey(tyToTypeExpr(callbackResult))}` : ""
-        }`,
+        `__dynamic_promise.${typeExprKey(promiseRef.type)}.${expr.path.join(".")}`,
         ffi,
         result,
         selected,
@@ -457,7 +831,7 @@ function resolveDelayedFfiCall(
     name("Js.Object"),
     {
       name: expr.path.at(-1)!,
-      type: fn(expr.args.map(dynamicReceiverArgType), { kind: "TVar", name: "b" }),
+      type: fn(expr.args.map(dynamicReceiverArgType), name("Js.Value")),
     },
     `__dynamic.${expr.path.join(".")}`,
     ffi,
@@ -467,4 +841,52 @@ function resolveDelayedFfiCall(
     valueRefs,
     resolveDelayedExpr,
   );
+}
+
+function callArgHintForReflection(expr: Expr, result: InferResult): JsCallArgHint {
+  if (expr.kind === "Var") {
+    const scheme = result.env.get(expr.name);
+    const target = scheme ? prune(scheme.type) : undefined;
+    if (target?.tag === "fn") {
+      return {
+        kind: "function",
+        arity: jsFunctionArity(target),
+        paramTypes: jsFunctionParamTypes(target),
+        resultType: tyToTypeExpr(target.result),
+      };
+    }
+  }
+  const base = callArgHint(expr);
+  if (base.kind !== "function") return base;
+  const resultType = callbackReturnType(expr, result);
+  const paramTypes = expr.kind === "Lambda"
+    ? expr.params.map((param) => param.annotation).filter((type): type is TypeExpr => !!type)
+    : undefined;
+  return {
+    ...base,
+    paramTypes: paramTypes?.length ? paramTypes : undefined,
+    resultType: resultType ?? undefined,
+  };
+}
+
+function jsFunctionArity(type: Extract<ReturnType<typeof prune>, { tag: "fn" }>): number {
+  if (type.params.length !== 1) return type.params.length;
+  const param = prune(type.params[0]);
+  return param.tag === "tuple" ? param.items.length : type.params.length;
+}
+
+function jsFunctionParamTypes(type: Extract<ReturnType<typeof prune>, { tag: "fn" }>): TypeExpr[] {
+  if (type.params.length !== 1) return type.params.map(tyToTypeExpr);
+  const param = prune(type.params[0]);
+  return param.tag === "tuple" ? param.items.map(tyToTypeExpr) : type.params.map(tyToTypeExpr);
+}
+
+function callbackReturnType(expr: Expr, result: InferResult): TypeExpr | undefined {
+  if (expr.kind === "Lambda") {
+    const bodyType = inferredType(result, expr.body);
+    return bodyType ? tyToTypeExpr(bodyType) : undefined;
+  }
+  const type = inferredType(result, expr);
+  const target = type ? prune(type) : undefined;
+  return target?.tag === "fn" ? tyToTypeExpr(target.result) : undefined;
 }

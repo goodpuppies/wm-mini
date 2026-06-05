@@ -167,7 +167,15 @@ function inferExprInner(
         provenance,
         ffiObligations,
       );
-      t = ffiGetResultTy(typeEnv, jsArrayFfiGetValue(typeEnv, receiver, expr.path) ?? fresh());
+      t = ffiGetResultTy(
+        typeEnv,
+        jsArrayFfiGetValue(typeEnv, receiver, expr.path) ??
+          jsPrimitiveFfiGetValue(receiver, expr.path) ??
+          jsonValueTy(typeEnv),
+      );
+      if (isJsValueResult(t, typeEnv) && isUnresolvedTypeVar(receiver)) {
+        constrain(receiver, jsonValueTy(typeEnv));
+      }
       break;
     }
     case "FfiCall": {
@@ -189,8 +197,12 @@ function inferExprInner(
         typeEnv,
         jsArrayFfiCallValue(typeEnv, receiver, expr.path, args) ??
           jsPromiseFfiCallValue(typeEnv, receiver, expr.path, args) ??
-          fresh(),
+          jsPrimitiveFfiCallValue(receiver, expr.path, args) ??
+          jsonValueTy(typeEnv),
       );
+      if (isJsValueResult(t, typeEnv) && isUnresolvedTypeVar(receiver)) {
+        constrain(receiver, jsonValueTy(typeEnv));
+      }
       break;
     }
     case "Lambda": {
@@ -408,6 +420,37 @@ function jsArrayElement(typeEnv: TypeEnv, receiver: Ty): Ty | undefined {
   return target.args[0];
 }
 
+function jsPrimitiveFfiGetValue(receiver: Ty, path: string[]): Ty | undefined {
+  const target = prune(receiver);
+  if (path.length !== 1 || target.tag !== "prim") return undefined;
+  if (target.name === "String" && path[0] === "length") return NumberTy;
+  return undefined;
+}
+
+function jsPrimitiveFfiCallValue(receiver: Ty, path: string[], args: Ty[]): Ty | undefined {
+  const target = prune(receiver);
+  if (path.length !== 1 || target.tag !== "prim") return undefined;
+  const member = path[0];
+  if (target.name === "Number" && member === "toString") {
+    if (args.length > 1) return undefined;
+    if (args[0]) constrain(args[0], NumberTy);
+    return StringTy;
+  }
+  if (target.name === "String" && member === "slice") {
+    if (args.length < 1 || args.length > 2) return undefined;
+    constrain(args[0], NumberTy);
+    if (args[1]) constrain(args[1], NumberTy);
+    return StringTy;
+  }
+  if (target.name === "String" && member === "padStart") {
+    if (args.length !== 2) return undefined;
+    constrain(args[0], NumberTy);
+    constrain(args[1], StringTy);
+    return StringTy;
+  }
+  return undefined;
+}
+
 function jsArrayTy(typeEnv: TypeEnv, element: Ty): Ty {
   const info = typeEnv.get("Js.Array");
   if (!info) throw new Error("unknown type Js.Array");
@@ -456,7 +499,9 @@ function jsPromiseCallbackActual(typeEnv: TypeEnv, expected: Ty, actual: Ty): Ty
   ) {
     return actual;
   }
-  if (!isJsObjectLikeTy(typeEnv, expectedFn.params[0]) || !isJsValueTy(typeEnv, actualFn.params[0])) {
+  if (
+    !isJsObjectLikeTy(typeEnv, expectedFn.params[0]) || !isJsValueTy(typeEnv, actualFn.params[0])
+  ) {
     return actual;
   }
   return fn([expectedFn.params[0]], actualFn.result);
@@ -465,6 +510,19 @@ function jsPromiseCallbackActual(typeEnv: TypeEnv, expected: Ty, actual: Ty): Ty
 function isJsValueTy(typeEnv: TypeEnv, type: Ty): boolean {
   const target = prune(type);
   return target.tag === "named" && target.id === typeEnv.get("Js.Value")?.id;
+}
+
+function isJsValueResult(type: Ty, typeEnv: TypeEnv): boolean {
+  const target = prune(type);
+  const result = typeEnv.get("Result");
+  if (!result || target.tag !== "named" || target.id !== result.id || target.args.length !== 2) {
+    return false;
+  }
+  return isJsValueTy(typeEnv, target.args[0]);
+}
+
+function isUnresolvedTypeVar(type: Ty): boolean {
+  return prune(type).tag === "var";
 }
 
 function isJsObjectLikeTy(typeEnv: TypeEnv, type: Ty): boolean {

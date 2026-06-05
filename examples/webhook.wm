@@ -10,7 +10,7 @@ from js.global import unsafe {
 };
 from js.global("Array") import unsafe { from as arrayFrom };
 from js.global("Promise") import unsafe { resolve as promiseResolve };
-from js.global import type { Request };
+from js.global import type { AbortController, Request, TextEncoder, Uint8Array, URL };
 from js.global("crypto.subtle") import unsafe {
   importKey,
   sign,
@@ -57,7 +57,8 @@ let response = (body, status) => {
 };
 
 let hexByte = (byte, index, array) => {
-  byte :> .toString(16) :> try :> .padStart(2, "0") :> try
+  let text = byte :> .toString(16) :> try;
+  text :> .padStart(2, "0") :> try
 };
 
 let hexFromBuffer = (buffer) => {
@@ -65,7 +66,7 @@ let hexFromBuffer = (buffer) => {
   arrayFrom(bytes) :> .map(hexByte) :> try :> .join("") :> try
 };
 
-let encodeText = (encoder, text) => {
+let encodeText = (encoder: TextEncoder, text) => {
   encoder :> .encode(text) :> try
 };
 
@@ -101,7 +102,7 @@ let sendDiscordMessage = (content) => {
   }) :> try
 };
 
-let handleMockDiscord = (req) => {
+let handleMockDiscord = (req: Request) => {
   let bodyPromise = req :> .json() :> try;
   bodyPromise :> .then((body) => {
     let payload: MockDiscordPayload = body :> Json.assert :> try;
@@ -113,7 +114,8 @@ let handleMockDiscord = (req) => {
 };
 
 let formatCommit = (commit, index, array) => {
-  let shortId = commit.id :> .slice(0, 7) :> try;
+  let id = commit.id;
+  let shortId = id :> .slice(0, 7) :> try;
   let message = commit.message;
   "- [" ++ shortId ++ "] " ++ message
 };
@@ -138,7 +140,7 @@ let handlePushPayload = (req, payload) => {
   }
 };
 
-let handleRequest = (req, info) => {
+let handleRequest = (req: Request, info) => {
   let method = req :> .method :> try;
   let urlText = req :> .url :> try;
   let url = URL.new(urlText);
@@ -187,7 +189,8 @@ let handleRequest = (req, info) => {
 
 let runSimulation = () => {
   let ac = AbortController.new();
-  let server = serve(JSON{ port: 8080, signal: try(ac.signal) }, handleRequest);
+  let signal = ac :> .signal :> try;
+  let server = serve(JSON{ port: 8080, signal: signal }, handleRequest);
   log("Server started on http://localhost:8080");
 
   let dummyPayload = JSON{

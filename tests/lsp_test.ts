@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { DocumentStore } from "../src/lsp/documents.ts";
+import { hoverAt } from "../src/lsp/hover.ts";
 import { decodeMessages, encodeMessage, type RpcMessage } from "../src/lsp/rpc.ts";
 import { fileUriToPath, pathToFileUri } from "../src/lsp/uri.ts";
 import { validateUri, type ValidationResult } from "../src/lsp/validation.ts";
@@ -334,6 +335,29 @@ Deno.test("lsp validation reports import cycles on the closing import path", asy
   const diagnostics = await diagnosticsForPath(await validateUri(pathToFileUri(a), new Map()), b);
   assertEquals(diagnostics?.map((diagnostic) => diagnostic.code), ["module.import-cycle"]);
   assertEquals(diagnostics?.[0].range, charRange(source, '"./a.wm"'));
+});
+
+Deno.test("lsp hover returns partial types when delayed FFI resolution fails", async () => {
+  const dir = await Deno.makeTempDir();
+  const main = `${dir}/main.wm`;
+  const source = `
+let try = (result) => {
+  match(result) {
+    Ok(value) => { value },
+    Err(_) => { Panic("ffi") },
+  }
+};
+
+let hexByte = (byte, index, array) => {
+  let text = byte :> .toString(16) :> try;
+  text :> .padStart(2, "0") :> try
+};
+`;
+  await Deno.writeTextFile(main, source);
+
+  const hover = await hoverAt(pathToFileUri(main), { line: 9, character: 13 }, new Map());
+
+  assertEquals(hover?.contents.value, "```wm\nbyte: Js.Value\n```");
 });
 
 async function diagnosticsForPath(results: ValidationResult[], path: string) {

@@ -3,6 +3,10 @@ import type { InferResult } from "../../infer.ts";
 import type { ResolveOptions } from "./types.ts";
 import { rewriteExprCalls } from "../receiver/rewrite_expr.ts";
 import {
+  inferredType,
+  tyToTypeExpr,
+} from "./receiver_models.ts";
+import {
   addVariants,
   type FfiBinding,
   type FfiElaboration,
@@ -12,7 +16,7 @@ import {
   refsForCallbackArg,
   selectVariant,
 } from "../shared.ts";
-import type { JsMemberType, JsTypeRef } from "../reflect/types.ts";
+import { jsGlobalTypeRef, type JsMemberType, type JsTypeRef } from "../reflect/types.ts";
 
 type ResolveExpr = (
   expr: Expr,
@@ -30,21 +34,24 @@ export function materializeReceiverProperty(
   member: JsMemberType,
   surfaceName: string,
   bindings: Map<string, FfiBinding>,
+  foreignTypeRefs: Map<string, JsTypeRef>,
   selected: Set<string>,
 ): Expr {
+  const variants = memberVariants(member).map((variant) => ({
+    type: prependReceiver(variant.type, receiverType),
+    resultRef: variant.resultRef,
+    callbackParamRefs: variant.callbackParamRefs?.map((item) => ({
+      argIndex: item.argIndex + 1,
+      params: item.params,
+    })),
+  }));
+  rememberVariantForeignTypeRefs(variants, foreignTypeRefs);
   addVariants(
     bindings,
     surfaceName,
     path.at(-1)!,
     { kind: "JsReceiver", path },
-    memberVariants(member).map((variant) => ({
-      type: prependReceiver(variant.type, receiverType),
-      resultRef: variant.resultRef,
-      callbackParamRefs: variant.callbackParamRefs?.map((item) => ({
-        argIndex: item.argIndex + 1,
-        params: item.params,
-      })),
-    })),
+    variants,
     true,
   );
   const variant = selectVariant(bindings.get(surfaceName)?.variants ?? [], [receiver]);
@@ -71,23 +78,29 @@ export function materializeReceiverCall(
   valueRefs: Map<string, JsTypeRef>,
   resolveExpr: ResolveExpr,
 ): Expr {
+  const variants = memberVariants(member).map((variant) => ({
+    type: prependReceiver(variant.type, receiverType),
+    resultRef: variant.resultRef,
+    callbackParamRefs: variant.callbackParamRefs?.map((item) => ({
+      argIndex: item.argIndex + 1,
+      params: item.params,
+    })),
+  }));
+  rememberVariantForeignTypeRefs(variants, ffi.foreignTypeRefs);
   addVariants(
     ffi.bindings,
     surfaceName,
     path.at(-1)!,
     { kind: "JsReceiver", path },
-    memberVariants(member).map((variant) => ({
-      type: prependReceiver(variant.type, receiverType),
-      resultRef: variant.resultRef,
-      callbackParamRefs: variant.callbackParamRefs?.map((item) => ({
-        argIndex: item.argIndex + 1,
-        params: item.params,
-      })),
-    })),
+    variants,
     true,
   );
   const allArgs = [receiver, ...args];
-  const variant = selectVariant(ffi.bindings.get(surfaceName)?.variants ?? [], allArgs);
+  const argTypes = [receiverType, ...args.map((arg) => {
+    const type = inferredType(result, arg);
+    return type ? tyToTypeExpr(type) : undefined;
+  })];
+  const variant = selectVariant(ffi.bindings.get(surfaceName)?.variants ?? [], allArgs, argTypes);
   if (!variant) return { kind: "FfiCall", receiver, path, args };
   selected.add(variant.internalName);
   return {
@@ -112,6 +125,62 @@ export function materializeReceiverCall(
   };
 }
 
+function rememberVariantForeignTypeRefs(
+  variants: { type: TypeExpr; resultRef?: JsTypeRef; callbackParamRefs?: { params: JsTypeRef[] }[] }[],
+  foreignTypeRefs: Map<string, JsTypeRef>,
+) {
+  for (const variant of variants) {
+    rememberForeignTypeNames(variant.type, foreignTypeRefs);
+    if (variant.resultRef?.type) rememberForeignTypeNames(variant.resultRef.type, foreignTypeRefs);
+    for (const callback of variant.callbackParamRefs ?? []) {
+      for (const ref of callback.params) {
+        if (ref.type) rememberForeignTypeNames(ref.type, foreignTypeRefs, ref);
+      }
+    }
+  }
+}
+
+function rememberForeignTypeNames(
+  type: TypeExpr,
+  foreignTypeRefs: Map<string, JsTypeRef>,
+  ref?: JsTypeRef,
+) {
+  switch (type.kind) {
+    case "TName":
+      if (type.args.length === 0 && isReflectedForeignTypeName(type.name)) {
+        const typeRef = ref ?? jsGlobalTypeRef(type.name);
+        foreignTypeRefs.set(type.name, typeRef);
+        foreignTypeRefs.set(typeRef.key, typeRef);
+      }
+      for (const arg of type.args) rememberForeignTypeNames(arg, foreignTypeRefs);
+      break;
+    case "TTuple":
+      for (const item of type.items) rememberForeignTypeNames(item, foreignTypeRefs);
+      break;
+    case "TFn":
+      for (const param of type.params) rememberForeignTypeNames(param, foreignTypeRefs);
+      rememberForeignTypeNames(type.result, foreignTypeRefs);
+      break;
+    case "TVar":
+      break;
+  }
+}
+
+function isReflectedForeignTypeName(typeName: string): boolean {
+  return /^[A-Za-z_$][\w$]*$/.test(typeName) &&
+    !builtInTypeNames.has(typeName) &&
+    !typeName.startsWith("Js.");
+}
+
+const builtInTypeNames = new Set([
+  "Bool",
+  "Number",
+  "Option",
+  "Result",
+  "String",
+  "Void",
+]);
+
 function resolveDelayedCallArg(
   arg: Expr,
   argIndex: number,
@@ -130,7 +199,6 @@ function resolveDelayedCallArg(
     ffi.bindings,
     selected,
     localValueRefs,
-    new Map(),
     new Map(),
     ffi.foreignTypeRefs,
   );

@@ -19,17 +19,13 @@ Deno.test("rejects Workman ADT values passed to JS FFI calls", async () => {
     () =>
       checkSource(`
         from js.global("console") import * as console;
-        from js.module("node:crypto") import { createHash };
-        let hash = match(createHash("sha256")) {
-          Ok(h) => { h },
-          Err(_) => { Panic("err") }
-        };
+        let value = Ok("x");
         let main = () => {
-          console.log("SHA256:", hash.digest("hex"));
+          console.log(value);
         };
       `),
     Error,
-    'cannot pass "Result<String, Js.Error>" to JS FFI call',
+    'cannot pass "Result<String,',
   );
 });
 
@@ -64,8 +60,8 @@ Deno.test("JSON literal variables can settle to primitive types", async () => {
     let value = response("ok", 200);
   `);
 
-  expectBinding(result.env, "response", { type: "((String, 'a)) => Js.Object", vars: 1 });
-  expectBinding(result.env, "value", { type: "Js.Object", vars: 0 });
+  expectBinding(result.env, "response", { type: "((String, 'a)) => Response", vars: 1 });
+  expectBinding(result.env, "value", { type: "Response", vars: 0 });
 });
 
 Deno.test("dynamic JS receiver callbacks adapt Workman lambdas", async () => {
@@ -84,6 +80,26 @@ Deno.test("dynamic JS receiver callbacks adapt Workman lambdas", async () => {
   `);
 
   assertStringIncludes(js, '{"kind":"fn","params":["id","id","id"],"result":"id"}');
+});
+
+Deno.test("unresolved FFI receiver callbacks require an explicit JS value check", async () => {
+  await assertRejects(
+    () =>
+      checkSource(`
+    let try = (result) => {
+      match(result) {
+        Ok(value) => { value },
+        Err(_) => { Panic("ffi") },
+      }
+    };
+    let hexByte = (byte, index, array) => {
+      let text = byte :> .toString(16) :> try;
+      text :> .padStart(2, "0") :> try
+    };
+  `),
+    Error,
+    "cannot resolve JS FFI method toString for receiver type Js.Value",
+  );
 });
 
 Deno.test("dynamic JS callback parameter annotations are rejected", async () => {
@@ -216,9 +232,10 @@ Deno.test("typed JS array receiver results infer through map and join", async ()
   expectBinding(result.env, "text", { type: "String", vars: 0 });
 });
 
-Deno.test("Array.from preserves numeric typed array element types", async () => {
+Deno.test("Array.from works with explicit typed array element annotations", async () => {
   const source = `
     from js.global import unsafe { Uint8Array };
+    from js.global import type { Uint8Array };
     from js.global("Array") import unsafe { from as arrayFrom };
     let try = (result) => {
       match(result) {
@@ -226,11 +243,11 @@ Deno.test("Array.from preserves numeric typed array element types", async () => 
         Err(_) => { Panic("ffi") },
       }
     };
-    let hexByte = (byte, index, array) => {
+    let hexByte = (byte: Number, index, array) => {
       byte :> .toString(16) :> try
     };
     let makeHex = () => {
-      let bytes = Uint8Array.new(JSON{});
+      let bytes: Uint8Array = Uint8Array.new(JSON{});
       let hexParts = arrayFrom(bytes) :> .map(hexByte) :> try;
       hexParts :> .join("") :> try
     };

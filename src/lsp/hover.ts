@@ -10,6 +10,9 @@ import type {
   RecordPatternField,
 } from "../ast.ts";
 import { analyzeFile } from "../compiler.ts";
+import { prepareFfiElaboration } from "../ffi/elab.ts";
+import { inferModulePartial } from "../infer.ts";
+import { loadModuleGraph } from "../module_graph.ts";
 import { type AstNode, lineColToOffset, lineStarts } from "../source.ts";
 import { instantiate, type Scheme, show } from "../types.ts";
 import { fileUriToPath } from "./uri.ts";
@@ -62,6 +65,31 @@ async function analyzeForHover(
 ): Promise<Awaited<ReturnType<typeof analyzeFile>> | null> {
   try {
     return await analyzeFile(entryPath, { sourceOverrides });
+  } catch {
+    return await analyzePartialForHover(entryPath, sourceOverrides);
+  }
+}
+
+async function analyzePartialForHover(
+  entryPath: string,
+  sourceOverrides: Map<string, string>,
+): Promise<Awaited<ReturnType<typeof analyzeFile>> | null> {
+  try {
+    const graph = await loadModuleGraph(entryPath, { sourceOverrides });
+    for (const node of graph.nodes.values()) {
+      node.module = prepareFfiElaboration(node.module).module;
+    }
+    const results = new Map();
+    for (const path of graph.order) {
+      const node = graph.nodes.get(path)!;
+      const imports = new Map();
+      for (const edge of node.imports) {
+        const imported = results.get(edge.path);
+        if (imported) imports.set(edge.specifier, imported);
+      }
+      results.set(path, inferModulePartial(node.module, imports));
+    }
+    return { graph, results };
   } catch {
     return null;
   }

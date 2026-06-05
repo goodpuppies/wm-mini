@@ -1,20 +1,11 @@
-import type { Decl, Expr, Module } from "../ast.ts";
+import type { Decl, Module, TypeExpr } from "../ast.ts";
 import type { JsTypeRef } from "./reflect/types.ts";
+import { jsGlobalTypeRef } from "./reflect/types.ts";
 import { collectFfiDecl, generatedJsImports, generatedTypeAliases } from "./imports.ts";
-import {
-  letBindingPassesThroughOkPayload,
-  type ObjectAccess,
-  rememberLetRefs,
-  resultRefForExpr,
-} from "./receiver/receiver.ts";
+import { type ObjectAccess, rememberLetObjectAccess } from "./receiver/receiver.ts";
 import { rewriteDeclCalls } from "./receiver/rewrite_decl.ts";
 import { rewriteExprCalls, setActiveRecordFields } from "./receiver/rewrite_expr.ts";
-import {
-  type FfiBinding,
-  type FfiElaboration,
-  type FfiVariant,
-  generatedReceiverJsImports,
-} from "./shared.ts";
+import { type FfiBinding, type FfiElaboration, generatedReceiverJsImports } from "./shared.ts";
 
 export function prepareFfiElaboration(module: Module): FfiElaboration {
   const previousRecordFields = setActiveRecordFields(recordFieldNames(module));
@@ -29,6 +20,7 @@ function prepareFfiElaborationInner(module: Module): FfiElaboration {
   const bindings = new Map<string, FfiBinding>();
   const importedRefs = new Map<string, JsTypeRef>();
   const importedTypeRefs = new Map<string, JsTypeRef>();
+  const localTypes = localTypeNames(module);
   for (const decl of module.decls) {
     if (decl.kind !== "JsImportDecl" || !decl.typeOnly) continue;
     collectFfiDecl(bindings, importedRefs, importedTypeRefs, decl);
@@ -37,12 +29,10 @@ function prepareFfiElaborationInner(module: Module): FfiElaboration {
     if (decl.kind !== "JsImportDecl" || decl.typeOnly) continue;
     collectFfiDecl(bindings, importedRefs, importedTypeRefs, decl);
   }
-  collectReflectedCallbackTypeRefs(bindings, importedTypeRefs);
+  collectReflectedForeignTypeRefs(bindings, importedTypeRefs, localTypes);
   const selected = new Set<string>();
   const refs = new Map(importedRefs);
-  const resultRefs = new Map<string, JsTypeRef>();
   const objectAccess = new Map<string, ObjectAccess>();
-  const passThroughRefs = new Set<string>();
   const rewrittenDecls: Decl[] = [];
   for (const decl of module.decls) {
     if (decl.kind === "JsImportDecl") {
@@ -54,24 +44,14 @@ function prepareFfiElaborationInner(module: Module): FfiElaboration {
       bindings,
       selected,
       refs,
-      resultRefs,
       objectAccess,
       importedTypeRefs,
-      passThroughRefs,
       rewriteExprCalls,
     );
-    for (const name of letBindingPassesThroughOkPayload(rewritten)) passThroughRefs.add(name);
-    rememberLetRefs(
-      rewritten,
-      bindings,
-      refs,
-      resultRefs,
-      objectAccess,
-      importedTypeRefs,
-      passThroughRefs,
-    );
+    rememberLetObjectAccess(rewritten, bindings, objectAccess, importedTypeRefs);
     rewrittenDecls.push(rewritten);
   }
+  collectReflectedForeignTypeRefs(bindings, importedTypeRefs, localTypes);
   const decls = [
     ...generatedTypeAliases(importedTypeRefs),
     ...generatedReceiverJsImports(bindings, selected),
@@ -79,20 +59,10 @@ function prepareFfiElaborationInner(module: Module): FfiElaboration {
       decl.kind === "JsImportDecl" ? generatedJsImports(decl, bindings, selected) : [decl]
     ),
   ];
-  const expressionRefs = collectExpressionRefs(
-    rewrittenDecls,
-    bindings,
-    resultRefs,
-    passThroughRefs,
-  );
-  const namedCallbackRefs = collectNamedCallbackRefs(rewrittenDecls, bindings);
   return {
     module: { ...module, decls },
     bindings,
     foreignTypeRefs: importedTypeRefs,
-    expressionRefs,
-    namedCallbackRefs,
-    passThroughRefs,
     selected,
   };
 }
@@ -106,193 +76,86 @@ function recordFieldNames(module: Module): Set<string> {
   return fields;
 }
 
-function collectReflectedCallbackTypeRefs(
+function collectReflectedForeignTypeRefs(
   bindings: Map<string, FfiBinding>,
   foreignTypeRefs: Map<string, JsTypeRef>,
+  localTypes: Set<string>,
 ) {
   for (const binding of bindings.values()) {
     for (const variant of binding.variants) {
+      collectForeignTypeNames(variant.type, foreignTypeRefs, localTypes);
+      if (variant.resultRef?.type) {
+        collectForeignTypeNames(variant.resultRef.type, foreignTypeRefs, localTypes);
+      }
       for (const callback of variant.callbackParamRefs ?? []) {
         for (const ref of callback.params) {
-          if (ref.type?.kind !== "TName" || ref.type.args.length !== 0) continue;
-          const name = ref.type.name;
-          if (name.includes(".")) continue;
-          if (name === "String" || name === "Number" || name === "Bool" || name.startsWith("Js.")) {
-            continue;
-          }
-          foreignTypeRefs.set(name, ref);
-          foreignTypeRefs.set(ref.key, ref);
+          if (ref.type) collectForeignTypeNames(ref.type, foreignTypeRefs, localTypes, ref);
         }
       }
     }
   }
 }
 
-function collectNamedCallbackRefs(
-  decls: Decl[],
-  bindings: Map<string, FfiBinding>,
-): Map<string, JsTypeRef[]> {
-  const refs = new Map<string, JsTypeRef[]>();
-  const variants = new Map<string, FfiVariant>();
-  for (const binding of bindings.values()) {
-    for (const variant of binding.variants) variants.set(variant.internalName, variant);
-    if (binding.variants.length === 1) variants.set(binding.surfaceName, binding.variants[0]);
-  }
-  const visit = (expr: Expr) => {
-    switch (expr.kind) {
-      case "Call": {
-        const variant = expr.callee.kind === "Var" ? variants.get(expr.callee.name) : undefined;
-        if (variant?.callbackParamRefs) {
-          for (const item of variant.callbackParamRefs) {
-            const arg = expr.args[item.argIndex];
-            if (arg?.kind === "Var") refs.set(arg.name, item.params);
-          }
-        }
-        visit(expr.callee);
-        expr.args.forEach(visit);
-        return;
+function collectForeignTypeNames(
+  type: TypeExpr,
+  foreignTypeRefs: Map<string, JsTypeRef>,
+  localTypes: Set<string>,
+  ref?: JsTypeRef,
+) {
+  switch (type.kind) {
+    case "TName":
+      if (type.args.length === 0 && isReflectedForeignTypeName(type.name, localTypes)) {
+        const typeRef = ref ?? jsGlobalTypeRef(type.name);
+        foreignTypeRefs.set(type.name, typeRef);
+        foreignTypeRefs.set(typeRef.key, typeRef);
       }
-      case "Tuple":
-      case "JsonArray":
-        expr.items.forEach(visit);
-        return;
-      case "Record":
-      case "JsonObject":
-        expr.fields.forEach((field) => visit(field.value));
-        return;
-      case "FfiGet":
-        visit(expr.receiver);
-        return;
-      case "FfiCall":
-        visit(expr.receiver);
-        expr.args.forEach(visit);
-        return;
-      case "Lambda":
-        visit(expr.body);
-        return;
-      case "If":
-        visit(expr.cond);
-        visit(expr.thenExpr);
-        visit(expr.elseExpr);
-        return;
-      case "Match":
-        visit(expr.value);
-        expr.arms.forEach((arm) => visit(arm.body));
-        return;
-      case "Panic":
-        visit(expr.message);
-        return;
-      case "Block":
-        for (const item of expr.items) {
-          if (item.kind === "LetDecl") {
-            item.bindings.forEach((binding) => visit(binding.value));
-          } else if (
-            item.kind !== "ImportDecl" && item.kind !== "JsImportDecl" &&
-            item.kind !== "ForeignTypeDecl" && item.kind !== "RecordDecl" &&
-            item.kind !== "TypeDecl"
-          ) {
-            visit(item);
-          }
-        }
-        visit(expr.result);
-        return;
-      case "Binary":
-        visit(expr.left);
-        visit(expr.right);
-        return;
-      case "Unary":
-        visit(expr.value);
-        return;
-      case "Pipe":
-        visit(expr.left);
-        visit(expr.right);
-        return;
-    }
-  };
-  for (const decl of decls) {
-    if (decl.kind === "LetDecl") {
-      decl.bindings.forEach((binding) => visit(binding.value));
-    }
+      for (const arg of type.args) collectForeignTypeNames(arg, foreignTypeRefs, localTypes);
+      break;
+    case "TTuple":
+      for (const item of type.items) collectForeignTypeNames(item, foreignTypeRefs, localTypes);
+      break;
+    case "TFn":
+      for (const param of type.params) collectForeignTypeNames(param, foreignTypeRefs, localTypes);
+      collectForeignTypeNames(type.result, foreignTypeRefs, localTypes);
+      break;
+    case "TVar":
+      break;
   }
-  return refs;
 }
 
-function collectExpressionRefs(
-  decls: Decl[],
-  bindings: Map<string, FfiBinding>,
-  resultRefs: Map<string, JsTypeRef>,
-  passThroughRefs: Set<string>,
-): Map<Expr, JsTypeRef> {
-  const refs = new Map<Expr, JsTypeRef>();
-  const visit = (expr: Expr) => {
-    const ref = resultRefForExpr(expr, bindings, resultRefs, passThroughRefs);
-    if (ref) refs.set(expr, ref);
-    switch (expr.kind) {
-      case "Tuple":
-      case "JsonArray":
-        expr.items.forEach(visit);
-        return;
-      case "Record":
-      case "JsonObject":
-        expr.fields.forEach((field) => visit(field.value));
-        return;
-      case "FfiGet":
-        visit(expr.receiver);
-        return;
-      case "FfiCall":
-        visit(expr.receiver);
-        expr.args.forEach(visit);
-        return;
-      case "Lambda":
-        visit(expr.body);
-        return;
-      case "Call":
-        visit(expr.callee);
-        expr.args.forEach(visit);
-        return;
-      case "If":
-        visit(expr.cond);
-        visit(expr.thenExpr);
-        visit(expr.elseExpr);
-        return;
-      case "Match":
-        visit(expr.value);
-        expr.arms.forEach((arm) => visit(arm.body));
-        return;
-      case "Panic":
-        visit(expr.message);
-        return;
-      case "Block":
-        for (const item of expr.items) {
-          if (item.kind === "LetDecl") {
-            item.bindings.forEach((binding) => visit(binding.value));
-          } else if (
-            item.kind !== "ImportDecl" && item.kind !== "JsImportDecl" &&
-            item.kind !== "ForeignTypeDecl" && item.kind !== "RecordDecl" &&
-            item.kind !== "TypeDecl"
-          ) {
-            visit(item);
-          }
+function isReflectedForeignTypeName(name: string, localTypes: Set<string>): boolean {
+  if (name.includes(".")) return false;
+  if (localTypes.has(name)) return false;
+  return !builtInTypeNames.has(name) && !name.startsWith("Js.");
+}
+
+const builtInTypeNames = new Set([
+  "Bool",
+  "Number",
+  "Option",
+  "Result",
+  "String",
+  "Void",
+]);
+
+function localTypeNames(module: Module): Set<string> {
+  const names = new Set<string>();
+  for (const decl of module.decls) {
+    switch (decl.kind) {
+      case "ForeignTypeDecl":
+      case "RecordDecl":
+      case "TypeDecl":
+        names.add(decl.name);
+        break;
+      case "JsImportDecl":
+        if (!decl.typeOnly || decl.clause.kind !== "Named") break;
+        for (const spec of decl.clause.specs) {
+          names.add(spec.alias ?? spec.name);
         }
-        visit(expr.result);
-        return;
-      case "Binary":
-        visit(expr.left);
-        visit(expr.right);
-        return;
-      case "Unary":
-        visit(expr.value);
-        return;
-      case "Pipe":
-        visit(expr.left);
-        visit(expr.right);
-        return;
-    }
-  };
-  for (const decl of decls) {
-    if (decl.kind === "LetDecl") {
-      decl.bindings.forEach((binding) => visit(binding.value));
+        break;
+      default:
+        break;
     }
   }
-  return refs;
+  return names;
 }

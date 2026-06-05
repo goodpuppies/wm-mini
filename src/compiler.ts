@@ -6,9 +6,18 @@ import {
 } from "./core/artifact.ts";
 import { emitCoreProgram } from "./core/emit_js.ts";
 import { coreFromSurface } from "./core/from_surface.ts";
-import { resolveDelayedFfiElaboration } from "./ffi/delayed/delayed.ts";
+import {
+  contextualizeDelayedCallbacks,
+  resolveDelayedFfiElaboration,
+} from "./ffi/delayed/delayed.ts";
 import { prepareFfiElaboration } from "./ffi/elab.ts";
-import { inferModule, inferModuleWithSteps, type InferResult, type InferStep } from "./infer.ts";
+import {
+  inferModule,
+  inferModulePartial,
+  inferModuleWithSteps,
+  type InferResult,
+  type InferStep,
+} from "./infer.ts";
 import {
   loadModuleGraph,
   type ModuleGraph,
@@ -124,12 +133,35 @@ export async function analyzeFile(
       imports.set(edge.specifier, firstResults.get(edge.path)!);
     }
     try {
-      firstResults.set(path, inferModule(node.module, imports));
+      firstResults.set(path, inferModulePartial(node.module, imports));
     } catch (error) {
       throw new ModuleAnalysisError(path, node.source, error);
     }
   }
-  const receiverOverrides = delayedReceiverOverrides(graph, firstResults);
+  const contextualResults = new Map<string, InferResult>();
+  for (const path of graph.order) {
+    const node = graph.nodes.get(path)!;
+    try {
+      const contextual = contextualizeDelayedCallbacks(ffi.get(path)!, firstResults.get(path)!);
+      ffi.set(path, contextual);
+      node.module = contextual.module;
+    } catch (error) {
+      throw new ModuleAnalysisError(path, node.source, error);
+    }
+  }
+  for (const path of graph.order) {
+    const node = graph.nodes.get(path)!;
+    const imports = new Map<string, InferResult>();
+    for (const edge of node.imports) {
+      imports.set(edge.specifier, contextualResults.get(edge.path)!);
+    }
+    try {
+      contextualResults.set(path, inferModule(node.module, imports));
+    } catch (error) {
+      throw new ModuleAnalysisError(path, node.source, error);
+    }
+  }
+  const receiverOverrides = delayedReceiverOverrides(graph, contextualResults);
   const foreignTypeRefs = new Map(
     [...ffi.values()].flatMap((item) =>
       [...item.foreignTypeRefs.values()].map((ref) => [ref.key, ref])
@@ -139,7 +171,7 @@ export async function analyzeFile(
     const node = graph.nodes.get(path)!;
     try {
       const prepared = ffi.get(path)!;
-      const resolved = resolveDelayedFfiElaboration(prepared, firstResults.get(path)!, {
+      const resolved = resolveDelayedFfiElaboration(prepared, contextualResults.get(path)!, {
         receiverTypes: receiverOverrides.get(path),
         foreignTypeRefs,
       });
@@ -290,8 +322,10 @@ function checkPreparedModuleWithoutImports(
   module: Module,
 ): { module: Module; result: InferResult } {
   const prepared = prepareFfiElaboration(module);
-  const first = checkModuleWithoutImports(prepared.module);
-  const resolved = resolveDelayedFfiElaboration(prepared, first);
+  const first = inferModulePartial(prepared.module);
+  const contextual = contextualizeDelayedCallbacks(prepared, first);
+  const contextualResult = checkModuleWithoutImports(contextual.module);
+  const resolved = resolveDelayedFfiElaboration(contextual, contextualResult);
   return { module: resolved.module, result: checkModuleWithoutImports(resolved.module) };
 }
 
